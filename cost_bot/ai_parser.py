@@ -1,8 +1,8 @@
 import json
-import os
 from typing import Any
 
 from .models import Direction, Flight, LoadingType, RoundTrip, TransportStatus
+from .settings import get_settings
 
 
 SYSTEM_INSTRUCTION = """
@@ -71,7 +71,8 @@ def parse_with_ai_if_configured(text: str) -> RoundTrip:
     Set OPENAI_API_KEY and install the OpenAI Python SDK to enable this.
     Without it, the bot continues in manual question mode.
     """
-    if not os.getenv("OPENAI_API_KEY"):
+    settings = get_settings()
+    if not settings.openai_api_key:
         return RoundTrip()
 
     try:
@@ -81,7 +82,7 @@ def parse_with_ai_if_configured(text: str) -> RoundTrip:
 
     client = OpenAI()
     response = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-5"),
+        model=settings.openai_model,
         instructions=SYSTEM_INSTRUCTION,
         input=text,
         text={

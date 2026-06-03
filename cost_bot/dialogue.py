@@ -4,6 +4,7 @@ from .ai_parser import parse_with_ai_if_configured
 from .calculator import FlightCost, RoundTripCost, calculate_round_trip
 from .config import COUNTRY_OPTIONS, DEFAULT_WEIGHT_KG
 from .models import Direction, Flight, LoadingType, RoundTrip, TransportStatus
+from .sheets import append_result, is_configured as sheets_is_configured
 from .validators import validate_flight
 
 
@@ -55,6 +56,9 @@ def run_cli() -> None:
 
     result = calculate_round_trip(round_trip)
     print(format_result(result))
+    if sheets_is_configured():
+        append_result(round_trip, result)
+        print("\nРезультат записан в Google Sheets.")
 
 
 def collect_flights(flights: list[Flight], direction: Direction, direction_label: str) -> None:
@@ -245,4 +249,3 @@ def manager_comment(result: RoundTripCost) -> str:
 
 def money(value: float) -> str:
     return f"{value:,.0f} руб.".replace(",", " ")
-
