@@ -1,9 +1,12 @@
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 from tkinter.scrolledtext import ScrolledText
 
 from cost_bot.desktop_dialog import DesktopDialogSession, parse_yes_no
 
+
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_es_trans.png"
 
 COLORS = {
     "red": "#d71920",
@@ -14,6 +17,7 @@ COLORS = {
     "muted": "#66717f",
     "paper": "#ffffff",
     "soft": "#f3f5f8",
+    "logo_bg": "#eef1f4",
 }
 
 
@@ -26,32 +30,42 @@ class DesktopCalculatorApp:
         self.root.configure(bg=COLORS["soft"])
 
         self.session = DesktopDialogSession()
+        self.logo_image = None
         self._build_ui()
         self._add_bot_message(self.session.start())
 
     def _build_ui(self) -> None:
-        self.header = tk.Frame(self.root, bg=COLORS["graphite"], height=86)
+        self.header = tk.Frame(self.root, bg=COLORS["logo_bg"], height=86)
         self.header.pack(fill=tk.X)
         self.header.pack_propagate(False)
 
-        brand_block = tk.Frame(self.header, bg=COLORS["graphite"])
-        brand_block.pack(side=tk.LEFT, fill=tk.Y, padx=22, pady=14)
-        tk.Label(
-            brand_block,
-            text="ЕС Транс",
-            bg=COLORS["graphite"],
-            fg=COLORS["paper"],
-            font=("Segoe UI Semibold", 20),
-        ).pack(anchor="w")
+        brand_block = tk.Frame(self.header, bg=COLORS["logo_bg"])
+        brand_block.pack(side=tk.LEFT, fill=tk.Y, padx=(18, 0), pady=0)
+        if LOGO_PATH.exists():
+            self.logo_image = tk.PhotoImage(file=str(LOGO_PATH)).subsample(6, 6)
+            tk.Label(
+                brand_block,
+                image=self.logo_image,
+                bg=COLORS["logo_bg"],
+                bd=0,
+            ).pack(anchor="w", padx=18, pady=(11, 0))
+        else:
+            tk.Label(
+                brand_block,
+                text="ЕС Транс",
+                bg=COLORS["logo_bg"],
+                fg=COLORS["graphite"],
+                font=("Segoe UI Semibold", 20),
+            ).pack(anchor="w", padx=18, pady=(11, 0))
         tk.Label(
             brand_block,
             text="Калькулятор себестоимости кругорейса",
-            bg=COLORS["graphite"],
-            fg="#cbd2da",
+            bg=COLORS["logo_bg"],
+            fg=COLORS["muted"],
             font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(anchor="w", padx=18, pady=(2, 0))
 
-        status_block = tk.Frame(self.header, bg=COLORS["graphite"])
+        status_block = tk.Frame(self.header, bg=COLORS["logo_bg"])
         status_block.pack(side=tk.RIGHT, padx=22)
         tk.Label(
             status_block,
@@ -65,8 +79,8 @@ class DesktopCalculatorApp:
         tk.Label(
             status_block,
             text="Расчет + Google Sheets",
-            bg=COLORS["graphite"],
-            fg="#cbd2da",
+            bg=COLORS["logo_bg"],
+            fg=COLORS["muted"],
             font=("Segoe UI", 9),
         ).pack(anchor="e", pady=(6, 0))
 
