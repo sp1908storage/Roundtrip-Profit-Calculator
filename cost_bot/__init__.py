@@ -1,0 +1,2 @@
+"""Freight cost bot prototype."""
+
