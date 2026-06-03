@@ -5,35 +5,147 @@ from tkinter.scrolledtext import ScrolledText
 from cost_bot.desktop_dialog import DesktopDialogSession, parse_yes_no
 
 
+COLORS = {
+    "red": "#d71920",
+    "red_dark": "#a91218",
+    "ink": "#20242a",
+    "graphite": "#2b3138",
+    "line": "#d9dee5",
+    "muted": "#66717f",
+    "paper": "#ffffff",
+    "soft": "#f3f5f8",
+}
+
+
 class DesktopCalculatorApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Roundtrip Profit Calculator")
-        self.root.geometry("900x650")
-        self.root.minsize(720, 520)
+        self.root.geometry("980x720")
+        self.root.minsize(820, 560)
+        self.root.configure(bg=COLORS["soft"])
 
         self.session = DesktopDialogSession()
         self._build_ui()
         self._add_bot_message(self.session.start())
 
     def _build_ui(self) -> None:
-        self.transcript = ScrolledText(self.root, wrap=tk.WORD, height=28, font=("Segoe UI", 10))
-        self.transcript.pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 8))
+        self.header = tk.Frame(self.root, bg=COLORS["graphite"], height=86)
+        self.header.pack(fill=tk.X)
+        self.header.pack_propagate(False)
+
+        brand_block = tk.Frame(self.header, bg=COLORS["graphite"])
+        brand_block.pack(side=tk.LEFT, fill=tk.Y, padx=22, pady=14)
+        tk.Label(
+            brand_block,
+            text="ЕС Транс",
+            bg=COLORS["graphite"],
+            fg=COLORS["paper"],
+            font=("Segoe UI Semibold", 20),
+        ).pack(anchor="w")
+        tk.Label(
+            brand_block,
+            text="Калькулятор себестоимости кругорейса",
+            bg=COLORS["graphite"],
+            fg="#cbd2da",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(2, 0))
+
+        status_block = tk.Frame(self.header, bg=COLORS["graphite"])
+        status_block.pack(side=tk.RIGHT, padx=22)
+        tk.Label(
+            status_block,
+            text="Локальная отладка",
+            bg=COLORS["red"],
+            fg=COLORS["paper"],
+            font=("Segoe UI Semibold", 10),
+            padx=12,
+            pady=6,
+        ).pack(anchor="e")
+        tk.Label(
+            status_block,
+            text="Расчет + Google Sheets",
+            bg=COLORS["graphite"],
+            fg="#cbd2da",
+            font=("Segoe UI", 9),
+        ).pack(anchor="e", pady=(6, 0))
+
+        body = tk.Frame(self.root, bg=COLORS["soft"])
+        body.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
+
+        self.transcript = ScrolledText(
+            body,
+            wrap=tk.WORD,
+            height=28,
+            font=("Segoe UI", 10),
+            bg=COLORS["paper"],
+            fg=COLORS["ink"],
+            relief=tk.FLAT,
+            bd=0,
+            padx=14,
+            pady=14,
+            insertbackground=COLORS["red"],
+        )
+        self.transcript.pack(fill=tk.BOTH, expand=True)
         self.transcript.configure(state=tk.DISABLED)
+        self.transcript.tag_configure("speaker_bot", foreground=COLORS["red"], font=("Segoe UI Semibold", 10))
+        self.transcript.tag_configure("speaker_user", foreground=COLORS["graphite"], font=("Segoe UI Semibold", 10))
+        self.transcript.tag_configure("message", foreground=COLORS["ink"], spacing3=10)
+        self.transcript.tag_configure("divider", foreground=COLORS["line"])
 
-        quick_frame = tk.Frame(self.root)
-        quick_frame.pack(fill=tk.X, padx=12, pady=(0, 8))
-        tk.Button(quick_frame, text="Да", width=10, command=lambda: self._send_quick("да")).pack(side=tk.LEFT)
-        tk.Button(quick_frame, text="Нет", width=10, command=lambda: self._send_quick("нет")).pack(side=tk.LEFT, padx=6)
-        tk.Button(quick_frame, text="Новый расчет", command=self._reset).pack(side=tk.RIGHT)
+        controls = tk.Frame(self.root, bg=COLORS["soft"])
+        controls.pack(fill=tk.X, padx=18, pady=(0, 10))
+        self._button(controls, "Да", lambda: self._send_quick("да"), primary=False, width=9).pack(side=tk.LEFT)
+        self._button(controls, "Нет", lambda: self._send_quick("нет"), primary=False, width=9).pack(side=tk.LEFT, padx=8)
+        self._button(controls, "Новый расчет", self._reset, primary=False, width=15).pack(side=tk.RIGHT)
 
-        input_frame = tk.Frame(self.root)
-        input_frame.pack(fill=tk.X, padx=12, pady=(0, 12))
-        self.entry = tk.Entry(input_frame, font=("Segoe UI", 11))
-        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        input_frame = tk.Frame(self.root, bg=COLORS["soft"])
+        input_frame.pack(fill=tk.X, padx=18, pady=(0, 18))
+        self.entry = tk.Entry(
+            input_frame,
+            font=("Segoe UI", 11),
+            bg=COLORS["paper"],
+            fg=COLORS["ink"],
+            insertbackground=COLORS["red"],
+            relief=tk.SOLID,
+            bd=1,
+        )
+        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=9)
         self.entry.bind("<Return>", lambda _event: self._send())
-        tk.Button(input_frame, text="Отправить", command=self._send).pack(side=tk.RIGHT, padx=(8, 0))
+        self._button(input_frame, "Отправить", self._send, primary=True, width=13).pack(side=tk.RIGHT, padx=(10, 0))
         self.entry.focus_set()
+
+        footer = tk.Frame(self.root, bg=COLORS["graphite"], height=26)
+        footer.pack(fill=tk.X)
+        footer.pack_propagate(False)
+        tk.Label(
+            footer,
+            text="ЕС Транс • Надежность вашего бизнеса",
+            bg=COLORS["graphite"],
+            fg="#cbd2da",
+            font=("Segoe UI", 9),
+        ).pack(side=tk.LEFT, padx=18)
+
+    def _button(self, parent: tk.Widget, text: str, command, primary: bool, width: int) -> tk.Button:
+        bg = COLORS["red"] if primary else COLORS["paper"]
+        fg = COLORS["paper"] if primary else COLORS["graphite"]
+        active_bg = COLORS["red_dark"] if primary else "#edf0f4"
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            width=width,
+            bg=bg,
+            fg=fg,
+            activebackground=active_bg,
+            activeforeground=fg,
+            relief=tk.FLAT,
+            bd=0,
+            padx=10,
+            pady=9,
+            font=("Segoe UI Semibold", 10),
+            cursor="hand2",
+        )
 
     def _send_quick(self, text: str) -> None:
         self.entry.delete(0, tk.END)
@@ -68,14 +180,17 @@ class DesktopCalculatorApp:
         self.entry.focus_set()
 
     def _add_user_message(self, message: str) -> None:
-        self._append(f"Вы:\n{message}\n\n")
+        self._append("Вы:\n", "speaker_user")
+        self._append(f"{message}\n", "message")
+        self._append("─" * 82 + "\n\n", "divider")
 
     def _add_bot_message(self, message: str) -> None:
-        self._append(f"Калькулятор:\n{message}\n\n")
+        self._append("Калькулятор:\n", "speaker_bot")
+        self._append(f"{message}\n\n", "message")
 
-    def _append(self, text: str) -> None:
+    def _append(self, text: str, tag: str | None = None) -> None:
         self.transcript.configure(state=tk.NORMAL)
-        self.transcript.insert(tk.END, text)
+        self.transcript.insert(tk.END, text, tag)
         self.transcript.see(tk.END)
         self.transcript.configure(state=tk.DISABLED)
 
@@ -88,4 +203,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
