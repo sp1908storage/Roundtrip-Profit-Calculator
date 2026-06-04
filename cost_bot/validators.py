@@ -38,11 +38,11 @@ def validate_flight(flight: Flight) -> list[ValidationIssue]:
     if flight.cargo_weight_kg <= 0:
         issues.append(ValidationIssue("cargo_weight_kg", "Вес должен быть больше 0.", True))
 
-    if flight.direction == Direction.BACKHAUL and flight.cargo_weight_kg > MAX_BACKHAUL_WEIGHT_KG:
+    if flight.cargo_weight_kg > MAX_BACKHAUL_WEIGHT_KG:
         issues.append(
             ValidationIssue(
                 "cargo_weight_kg",
-                f"Для обратного рейса вес не должен превышать {MAX_BACKHAUL_WEIGHT_KG} кг.",
+                f"Вес груза не должен превышать {MAX_BACKHAUL_WEIGHT_KG} кг.",
                 True,
             )
         )

@@ -227,9 +227,22 @@ class TelegramDialogSession:
         flight = self._current_flight()
         prompts = [
             Prompt("client_short", "Клиент кратко", parse_optional_text, optional=True),
-            Prompt("loading_address", "Адрес загрузки", parse_required_text),
-            Prompt("distance_to_loading_km", "Пробег до места загрузки, км", parse_non_negative_float),
-            Prompt("unloading_address", "Адрес выгрузки", parse_required_text),
+            Prompt(
+                "loading_address",
+                "Адрес загрузки. Лучше указать город, улицу, дом и строение, если известно",
+                parse_required_text,
+            ),
+            Prompt(
+                "distance_to_loading_km",
+                "Пробег до места загрузки, км. Если машина уже на месте, можно ответить 'пропустить'",
+                parse_non_negative_float,
+                default=0.0,
+            ),
+            Prompt(
+                "unloading_address",
+                "Адрес выгрузки. Лучше указать город, улицу, дом и строение, если известно",
+                parse_required_text,
+            ),
             Prompt(
                 "rate_with_vat_rub",
                 "Ставка в рублях с НДС. Если ставки нет, можно ответить 'не знаю' или 'пропустить'",
