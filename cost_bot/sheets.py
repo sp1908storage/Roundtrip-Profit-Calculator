@@ -1,11 +1,16 @@
+import re
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 from .calculator import RoundTripCost
 from .models import Flight, RoundTrip
 from .settings import get_settings, resolve_google_credentials_file
 
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 HEADERS = [
     "round_trip_id",
@@ -77,6 +82,7 @@ def append_request_log(
     calculation_status: str,
     error_comment: str,
     round_trip: RoundTrip,
+    image_cell_value: str | None = None,
 ) -> None:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
@@ -99,7 +105,7 @@ def append_request_log(
     _set_exact(headers, row, "Пользователь", user)
     _set_exact(headers, row, "Тип сообщения", message_type)
     _set_exact(headers, row, "Исходный текст", raw_text)
-    _set_exact(headers, row, "ID изображения", image_file_id or "")
+    _set_exact(headers, row, "ID изображения", image_cell_value or image_file_id or "")
     _set_exact(headers, row, "Модель AI", ai_model)
     _set_exact(headers, row, "Статус AI", ai_status)
     _set_exact(headers, row, "Статус расчета", calculation_status)
@@ -124,15 +130,78 @@ def append_request_log(
             valueInputOption="USER_ENTERED",
             body={"values": [row]},
         ).execute()
+        _format_request_image_cell(
+            service,
+            settings.google_sheets_spreadsheet_id,
+            REQUESTS_WORKSHEET_NAME,
+            existing_row,
+            headers,
+            image_cell_value,
+        )
         return
 
-    service.spreadsheets().values().append(
+    response = service.spreadsheets().values().append(
         spreadsheetId=settings.google_sheets_spreadsheet_id,
         range=_range(REQUESTS_WORKSHEET_NAME, "A1"),
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body={"values": [row]},
     ).execute()
+    inserted_row = _row_number_from_updated_range(
+        response.get("updates", {}).get("updatedRange", "")
+    ) or _find_row_by_first_column(
+        service,
+        settings.google_sheets_spreadsheet_id,
+        REQUESTS_WORKSHEET_NAME,
+        request_id,
+    )
+    if inserted_row:
+        _format_request_image_cell(
+            service,
+            settings.google_sheets_spreadsheet_id,
+            REQUESTS_WORKSHEET_NAME,
+            inserted_row,
+            headers,
+            image_cell_value,
+        )
+
+
+def upload_request_image_to_drive(
+    *,
+    image_bytes: bytes,
+    mime_type: str,
+    request_id: str,
+) -> str | None:
+    settings = get_settings()
+    if not settings.google_drive_images_folder_id:
+        return None
+
+    drive_service = _build_drive_service()
+    extension = _extension_from_mime_type(mime_type)
+    metadata = {
+        "name": f"{request_id}{extension}",
+        "mimeType": mime_type,
+        "parents": [settings.google_drive_images_folder_id],
+    }
+
+    from googleapiclient.http import MediaIoBaseUpload
+
+    media = MediaIoBaseUpload(BytesIO(image_bytes), mimetype=mime_type, resumable=False)
+    created_file = drive_service.files().create(
+        body=metadata,
+        media_body=media,
+        fields="id",
+    ).execute()
+    file_id = created_file["id"]
+
+    drive_service.permissions().create(
+        fileId=file_id,
+        body={"type": "anyone", "role": "reader"},
+        fields="id",
+    ).execute()
+
+    image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+    return f'=IMAGE("{image_url}")'
 
 
 def is_configured() -> bool:
@@ -240,6 +309,89 @@ def _build_sheets_service(credentials_path: str | None = None):
     return build("sheets", "v4", credentials=credentials)
 
 
+def _build_drive_service():
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+
+    credentials_file = resolve_google_credentials_file()
+    credentials = service_account.Credentials.from_service_account_file(
+        str(credentials_file),
+        scopes=SCOPES,
+    )
+    return build("drive", "v3", credentials=credentials)
+
+
+def _format_request_image_cell(
+    service,
+    spreadsheet_id: str,
+    worksheet: str,
+    row_number: int,
+    headers: list[str],
+    image_cell_value: str | None,
+) -> None:
+    if not image_cell_value or not str(image_cell_value).startswith("=IMAGE("):
+        return
+    try:
+        image_column_index = headers.index("ID изображения")
+    except ValueError:
+        return
+
+    sheet_id = _worksheet_id(service, spreadsheet_id, worksheet)
+    if sheet_id is None:
+        return
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "requests": [
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": row_number - 1,
+                            "endIndex": row_number,
+                        },
+                        "properties": {"pixelSize": 140},
+                        "fields": "pixelSize",
+                    }
+                },
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": image_column_index,
+                            "endIndex": image_column_index + 1,
+                        },
+                        "properties": {"pixelSize": 180},
+                        "fields": "pixelSize",
+                    }
+                },
+            ]
+        },
+    ).execute()
+
+
+def _worksheet_id(service, spreadsheet_id: str, worksheet: str) -> int | None:
+    spreadsheet = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets.properties(sheetId,title)",
+    ).execute()
+    for sheet in spreadsheet.get("sheets", []):
+        properties = sheet["properties"]
+        if properties["title"] == worksheet:
+            return properties["sheetId"]
+    return None
+
+
+def _row_number_from_updated_range(updated_range: str) -> int | None:
+    match = re.search(r"(?:!|^)[A-Z]+(\d+)", updated_range)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def _ensure_worksheet(service, spreadsheet_id: str, worksheet: str) -> None:
     spreadsheet = service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
@@ -327,3 +479,11 @@ def _make_round_trip_id() -> str:
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"rt-{timestamp}-{uuid4().hex[:8]}"
+
+
+def _extension_from_mime_type(mime_type: str) -> str:
+    if mime_type == "image/png":
+        return ".png"
+    if mime_type == "image/webp":
+        return ".webp"
+    return ".jpg"

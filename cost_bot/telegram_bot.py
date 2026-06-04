@@ -8,7 +8,12 @@ from .ai_parser import parse_image_with_ai_if_configured, parse_with_ai_if_confi
 from .calculator import calculate_round_trip
 from .dialogue import format_result
 from .settings import get_settings
-from .sheets import append_request_log, append_result, is_configured as sheets_is_configured
+from .sheets import (
+    append_request_log,
+    append_result,
+    is_configured as sheets_is_configured,
+    upload_request_image_to_drive,
+)
 from .telegram_dialog import TelegramDialogSession
 
 
@@ -117,6 +122,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         message_type="photo",
         image_file_id=photo.file_id,
     )
+    session.image_cell_value = _upload_image_cell_value(session, image_bytes, "image/jpeg")
     SESSIONS[chat_id] = session
     await _safe_write_request_log(update, session, "диалог идет", "")
     await _send_messages(update, session.start())
@@ -210,12 +216,30 @@ async def _write_request_log(
         message_type=session.message_type,
         raw_text=session.source_text,
         image_file_id=session.image_file_id,
+        image_cell_value=session.image_cell_value,
         ai_model=ai_model,
         ai_status="разобрано",
         calculation_status=calculation_status,
         error_comment=error_comment,
         round_trip=session.round_trip,
     )
+
+
+def _upload_image_cell_value(
+    session: TelegramDialogSession,
+    image_bytes: bytes,
+    mime_type: str,
+) -> str | None:
+    if not sheets_is_configured():
+        return None
+    try:
+        return upload_request_image_to_drive(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            request_id=session.request_id,
+        )
+    except Exception:
+        return None
 
 
 async def _safe_write_request_log(

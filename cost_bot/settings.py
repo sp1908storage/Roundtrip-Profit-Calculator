@@ -22,6 +22,7 @@ class Settings:
     google_sheets_worksheet_name: str
     google_application_credentials: str | None
     google_application_credentials_json: str | None
+    google_drive_images_folder_id: str | None
 
 
 def get_settings() -> Settings:
@@ -38,6 +39,9 @@ def get_settings() -> Settings:
         google_sheets_worksheet_name=os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "Расчеты"),
         google_application_credentials=_optional_env("GOOGLE_APPLICATION_CREDENTIALS"),
         google_application_credentials_json=_optional_env("GOOGLE_APPLICATION_CREDENTIALS_JSON"),
+        google_drive_images_folder_id=_normalize_drive_folder_id(
+            _optional_env("GOOGLE_DRIVE_IMAGES_FOLDER_ID")
+        ),
     )
 
 
@@ -65,6 +69,16 @@ def _normalize_spreadsheet_id(value: str | None) -> str | None:
     if match:
         return match.group(1)
     return value.split("/edit", 1)[0].split("?", 1)[0].split("#", 1)[0]
+
+
+def _normalize_drive_folder_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    match = re.search(r"/folders/([^/?#]+)", value)
+    if match:
+        return match.group(1)
+    return value.split("?", 1)[0].split("#", 1)[0]
 
 
 def require_existing_file(path: str | None, label: str) -> Path:

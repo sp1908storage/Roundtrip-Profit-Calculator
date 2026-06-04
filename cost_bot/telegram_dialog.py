@@ -39,6 +39,7 @@ class TelegramDialogSession:
     source_text: str = ""
     message_type: str = "text"
     image_file_id: str | None = None
+    image_cell_value: str | None = None
     request_id: str = field(default_factory=lambda: f"req-{datetime.now(timezone.utc):%Y%m%d%H%M%S}-{uuid4().hex[:8]}")
     current_direction: Direction = Direction.FORWARD
     current_index: int = 0
@@ -153,12 +154,10 @@ class TelegramDialogSession:
                     self.current_prompt = Prompt(
                         field="another_forward",
                         label=(
-                            "Есть еще прямой рейс? "
-                            f"Можно добавить еще {MAX_FORWARD_FLIGHTS - len(self.round_trip.forward_flights)}."
+                            "Добавить еще прямой рейс "
+                            f"(Можно добавить еще {MAX_FORWARD_FLIGHTS - len(self.round_trip.forward_flights)})"
                         ),
                         parser=parse_yes_no,
-                        default=False,
-                        choices=["да", "нет"],
                     )
                     return [self._render_prompt(self.current_prompt)]
                 return self._move_to_backhaul_or_finish()
@@ -171,12 +170,10 @@ class TelegramDialogSession:
                 self.current_prompt = Prompt(
                     field="another_backhaul",
                     label=(
-                        "Есть еще обратный рейс? "
-                        f"Можно добавить еще {MAX_BACKHAUL_FLIGHTS - len(self.round_trip.backhaul_flights)}."
+                        "Добавить еще обратный рейс "
+                        f"(Можно добавить еще {MAX_BACKHAUL_FLIGHTS - len(self.round_trip.backhaul_flights)})"
                     ),
                     parser=parse_yes_no,
-                    default=False,
-                    choices=["да", "нет"],
                 )
                 return [self._render_prompt(self.current_prompt)]
             return self._finish()
