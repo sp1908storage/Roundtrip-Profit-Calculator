@@ -1,6 +1,6 @@
 from .calculator import RoundTripCost
 from .models import RoundTrip
-from .settings import get_settings, require_existing_file
+from .settings import get_settings, resolve_google_credentials_file
 
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -41,7 +41,7 @@ def append_result(round_trip: RoundTrip, result: RoundTripCost) -> None:
     if not settings.google_sheets_spreadsheet_id:
         raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured.")
 
-    service = _build_sheets_service(settings.google_application_credentials)
+    service = _build_sheets_service()
     worksheet = settings.google_sheets_worksheet_name
     _ensure_worksheet(service, settings.google_sheets_spreadsheet_id, worksheet)
     _ensure_headers(service, settings.google_sheets_spreadsheet_id, worksheet)
@@ -62,14 +62,21 @@ def append_result(round_trip: RoundTrip, result: RoundTripCost) -> None:
 
 def is_configured() -> bool:
     settings = get_settings()
-    return bool(settings.google_sheets_spreadsheet_id and settings.google_application_credentials)
+    return bool(
+        settings.google_sheets_spreadsheet_id
+        and (
+            settings.google_application_credentials
+            or settings.google_application_credentials_json
+        )
+    )
 
 
-def _build_sheets_service(credentials_path: str | None):
+def _build_sheets_service(credentials_path: str | None = None):
+    del credentials_path
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
 
-    credentials_file = require_existing_file(credentials_path, "GOOGLE_APPLICATION_CREDENTIALS")
+    credentials_file = resolve_google_credentials_file()
     credentials = service_account.Credentials.from_service_account_file(
         str(credentials_file),
         scopes=SCOPES,
