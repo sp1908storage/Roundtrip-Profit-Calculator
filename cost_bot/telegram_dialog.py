@@ -34,6 +34,7 @@ class TelegramDialogSession:
     round_trip: RoundTrip
     source_text: str = ""
     message_type: str = "text"
+    image_file_id: str | None = None
     request_id: str = field(default_factory=lambda: f"req-{datetime.now(timezone.utc):%Y%m%d%H%M%S}-{uuid4().hex[:8]}")
     current_direction: Direction = Direction.FORWARD
     current_index: int = 0

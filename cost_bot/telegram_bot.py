@@ -8,7 +8,7 @@ from .ai_parser import parse_image_with_ai_if_configured, parse_with_ai_if_confi
 from .calculator import calculate_round_trip
 from .dialogue import format_result
 from .settings import get_settings
-from .sheets import append_result, is_configured as sheets_is_configured
+from .sheets import append_request_log, append_result, is_configured as sheets_is_configured
 from .telegram_dialog import TelegramDialogSession
 
 
@@ -109,6 +109,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         round_trip=round_trip,
         source_text=update.effective_message.caption or "",
         message_type="photo",
+        image_file_id=photo.file_id,
     )
     SESSIONS[chat_id] = session
     await _send_messages(update, session.start())
@@ -128,16 +129,27 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
         result = calculate_round_trip(session.round_trip)
     except ValueError as exc:
         await update.effective_message.reply_text(f"Не удалось рассчитать: {exc}")
+        try:
+            await _write_request_log(update, session, "ошибка", str(exc))
+        except Exception as log_exc:
+            await update.effective_message.reply_text(f"Запись в лист Запросы не удалась: {log_exc}")
         _drop_session(update)
         return
 
+    sheets_error = None
     if sheets_is_configured():
-        append_result(session.round_trip, result)
+        try:
+            append_result(session.round_trip, result)
+            await _write_request_log(update, session, "расчет выполнен", "")
+        except Exception as exc:
+            sheets_error = str(exc)
 
     await update.effective_message.reply_text(
         escape(format_result(result)),
         parse_mode=ParseMode.HTML,
     )
+    if sheets_error:
+        await update.effective_message.reply_text(f"Расчет готов, но запись в Google Sheets не удалась: {sheets_error}")
     _drop_session(update)
 
 
@@ -155,6 +167,48 @@ def _drop_session(update: Update) -> None:
     chat_id = _chat_id(update)
     if chat_id is not None:
         SESSIONS.pop(chat_id, None)
+
+
+async def _write_request_log(
+    update: Update,
+    session: TelegramDialogSession,
+    calculation_status: str,
+    error_comment: str,
+) -> None:
+    if not sheets_is_configured():
+        return
+    settings = get_settings()
+    ai_model = (
+        (settings.openai_vision_model or settings.openai_model)
+        if session.message_type == "photo"
+        else settings.openai_model
+    )
+    append_request_log(
+        request_id=session.request_id,
+        source="Telegram",
+        user=_user_label(update),
+        message_type=session.message_type,
+        raw_text=session.source_text,
+        image_file_id=session.image_file_id,
+        ai_model=ai_model,
+        ai_status="разобрано",
+        calculation_status=calculation_status,
+        error_comment=error_comment,
+        round_trip=session.round_trip,
+    )
+
+
+def _user_label(update: Update) -> str:
+    user = update.effective_user
+    if not user:
+        return ""
+    parts = []
+    if user.full_name:
+        parts.append(user.full_name)
+    if user.username:
+        parts.append(f"@{user.username}")
+    parts.append(f"id:{user.id}")
+    return " ".join(parts)
 
 
 async def _is_allowed(update: Update) -> bool:
