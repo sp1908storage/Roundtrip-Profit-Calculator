@@ -363,7 +363,7 @@ class TelegramDialogSession:
         normalized = normalize_answer(text)
         current = getattr(self._current_flight(), prompt.field)
 
-        if normalized in SKIP_WORDS:
+        if normalized in SKIP_WORDS or (prompt.optional and normalized in NO_WORDS):
             if prompt.default is not None:
                 return prompt.default
             if prompt.optional:

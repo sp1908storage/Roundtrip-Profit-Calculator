@@ -1,3 +1,4 @@
+import re
 from html import escape
 
 from telegram import Update
@@ -83,6 +84,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = update.effective_message.text or ""
     if chat_id in SESSIONS:
         await _continue_session(update, SESSIONS[chat_id], text)
+        return
+
+    if _looks_like_orphaned_dialog_answer(text):
+        await update.effective_message.reply_text(
+            "Похоже, предыдущий диалог был прерван, например из-за перезапуска бота. "
+            "Я не буду начинать новый расчет по одному ответу, чтобы не гонять вас по второму кругу. "
+            "Пришлите исходную заявку заново одним сообщением или отправьте /new."
+        )
         return
 
     round_trip = parse_with_ai_if_configured(text)
@@ -195,6 +204,56 @@ def _has_missing_rate(session: TelegramDialogSession) -> bool:
     return any((flight.rate_with_vat_rub or 0) == 0 for flight in session.round_trip.flights)
 
 
+def _looks_like_orphaned_dialog_answer(text: str) -> bool:
+    normalized = text.strip().lower().replace("ё", "е")
+    if not normalized:
+        return True
+    if normalized in {
+        "да",
+        "нет",
+        "не знаю",
+        "пропустить",
+        "уже сообщили",
+        "уже сообщил",
+        "уже сделали",
+        "я же уже сообщил",
+        "я уже сообщил",
+    }:
+        return True
+    if re.search(r"\b(уже|сообщил|сообщала|сообщали|сделали|писал|писала)\b", normalized):
+        return True
+    if _looks_like_new_freight_request(normalized):
+        return False
+    words = re.findall(r"[a-zа-я0-9]+", normalized)
+    return len(words) <= 3
+
+
+def _looks_like_new_freight_request(normalized: str) -> bool:
+    if re.search(r"\S+\s*(?:-|—|->|→)\s*\S+", normalized):
+        return True
+    freight_words = (
+        "рейс",
+        "маршрут",
+        "заявк",
+        "расчет",
+        "рассчитать",
+        "посчитать",
+        "ставк",
+        "ндс",
+        "загруз",
+        "выгруз",
+        "доставка",
+        "перевоз",
+        "кругорейс",
+        "круго-рейс",
+    )
+    if any(word in normalized for word in freight_words):
+        return True
+    has_rate = bool(re.search(r"\d[\d\s]*(?:руб|₽|usd|eur|cny|юан|евро|долл)", normalized))
+    has_route_hint = len(re.findall(r"[a-zа-я]{3,}", normalized)) >= 2
+    return has_rate and has_route_hint
+
+
 async def _write_request_log(
     update: Update,
     session: TelegramDialogSession,
@@ -241,8 +300,12 @@ def _upload_image_cell_value(
             mime_type=mime_type,
             request_id=session.request_id,
         )
-    except Exception:
-        return "Картинка не загружена в Drive: проверьте доступ сервисного аккаунта к папке и Drive API"
+    except Exception as exc:
+        return (
+            "Картинка не загружена в Drive: "
+            f"{_safe_error_summary(exc)}. "
+            "Проверьте доступ сервисного аккаунта к папке и Drive API."
+        )
 
 
 async def _safe_write_request_log(
@@ -255,6 +318,24 @@ async def _safe_write_request_log(
         await _write_request_log(update, session, calculation_status, error_comment)
     except Exception:
         await update.effective_message.reply_text(SHEETS_PUBLIC_ERROR)
+
+
+def _safe_error_summary(exc: Exception) -> str:
+    text = " ".join(str(exc).split())
+    if "storageQuotaExceeded" in text or "Service Accounts do not have storage quota" in text:
+        return (
+            "у сервисного аккаунта нет Drive-хранилища; "
+            "для загрузки картинок нужен Shared Drive или OAuth-доступ пользователя"
+        )
+    if "accessNotConfigured" in text or "Drive API" in text and "disabled" in text:
+        return "не включен Google Drive API для проекта сервисного аккаунта"
+    if "File not found" in text or "notFound" in text:
+        return "папка Drive не найдена или не доступна сервисному аккаунту"
+    text = re.sub(r"-----BEGIN [^-]+-----.*?-----END [^-]+-----", "[hidden-key]", text)
+    text = re.sub(r"\{.{200,}\}", "[hidden-json]", text)
+    if len(text) > 220:
+        text = text[:217] + "..."
+    return text or exc.__class__.__name__
 
 
 def _user_label(update: Update) -> str:
