@@ -16,7 +16,6 @@ def missing_fields(flight: Flight) -> list[str]:
         "loading_address",
         "distance_to_loading_km",
         "unloading_address",
-        "rate_with_vat_rub",
         "status",
         "vat_percent",
         "distance_to_unloading_km",
@@ -104,4 +103,3 @@ def direction_is_allowed(flight: Flight, prohibited_pairs: set[tuple[str, str]])
     if not flight.country:
         return True
     return (flight.country, flight.direction.value) not in prohibited_pairs
-

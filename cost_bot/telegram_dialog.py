@@ -110,6 +110,8 @@ class TelegramDialogSession:
         rate = ""
         if flight.rate_with_vat_rub is not None:
             rate = f", ставка {money(flight.rate_with_vat_rub)} с НДС"
+        else:
+            rate = ", ставка не указана, посчитаю себестоимость без выручки"
         return f"рейс {index}: {route}{rate}"
 
     def _advance(self) -> list[str]:
@@ -228,7 +230,12 @@ class TelegramDialogSession:
             Prompt("loading_address", "Адрес загрузки", parse_required_text),
             Prompt("distance_to_loading_km", "Пробег до места загрузки, км", parse_non_negative_float),
             Prompt("unloading_address", "Адрес выгрузки", parse_required_text),
-            Prompt("rate_with_vat_rub", "Ставка в рублях с НДС", parse_non_negative_float),
+            Prompt(
+                "rate_with_vat_rub",
+                "Ставка в рублях с НДС. Если ставки нет, можно ответить 'не знаю' или 'пропустить'",
+                parse_non_negative_float,
+                default=0.0,
+            ),
             Prompt(
                 "status",
                 "Статус перевозки",

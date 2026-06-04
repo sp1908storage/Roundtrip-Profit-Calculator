@@ -144,6 +144,11 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
         except Exception as exc:
             sheets_error = str(exc)
 
+    if _has_missing_rate(session):
+        await update.effective_message.reply_text(
+            "Ставка не указана по одному или нескольким рейсам. "
+            "Считаю выручку по ним как 0 руб., поэтому расчетная прибыль будет со знаком минус."
+        )
     await update.effective_message.reply_text(
         escape(format_result(result)),
         parse_mode=ParseMode.HTML,
@@ -167,6 +172,10 @@ def _drop_session(update: Update) -> None:
     chat_id = _chat_id(update)
     if chat_id is not None:
         SESSIONS.pop(chat_id, None)
+
+
+def _has_missing_rate(session: TelegramDialogSession) -> bool:
+    return any((flight.rate_with_vat_rub or 0) == 0 for flight in session.round_trip.flights)
 
 
 async def _write_request_log(
