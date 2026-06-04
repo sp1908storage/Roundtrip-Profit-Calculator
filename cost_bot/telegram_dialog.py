@@ -23,6 +23,10 @@ FOREIGN_CURRENCY_RE = re.compile(
 )
 
 
+class ClarificationNeeded(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class Prompt:
     field: str
@@ -82,6 +86,8 @@ class TelegramDialogSession:
 
         try:
             value = self._parse_prompt_value(self.current_prompt, text)
+        except ClarificationNeeded as exc:
+            return [str(exc)]
         except ValueError as exc:
             return [f"Ошибка: {exc}", self._render_prompt(self.current_prompt)]
 
@@ -372,7 +378,7 @@ class TelegramDialogSession:
                 parsed_amount = parse_non_negative_float(text)
                 self.foreign_rate_amounts[self._flight_key()] = parsed_amount
                 self.foreign_rate_currencies[self._flight_key()] = detect_currency(text)
-                raise ValueError(
+                raise ClarificationNeeded(
                     f"Ставку понял как {amount(parsed_amount)} {self._foreign_rate_currency()}. "
                     "Укажите курс к рублю или сразу ставку в рублях."
                 )
