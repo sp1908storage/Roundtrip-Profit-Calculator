@@ -6,6 +6,7 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
+      "python": "C:/Users/sep/AppData/Local/Programs/Python/Python314/python.exe",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     },
@@ -14,6 +15,7 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/run_telegram.py",
+      "python": "C:/Users/sep/AppData/Local/Programs/Python/Python314/python.exe",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     }
