@@ -5,9 +5,14 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from .ai_parser import parse_image_with_ai_if_configured, parse_with_ai_if_configured
+from .ai_parser import (
+    parse_data_with_ai_if_configured,
+    parse_image_with_ai_if_configured,
+    parse_with_ai_if_configured,
+)
 from .calculator import calculate_round_trip
 from .dialogue import format_result
+from .models import RoundTrip
 from .settings import get_settings
 from .sheets import (
     append_request_log,
@@ -94,7 +99,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    round_trip = parse_with_ai_if_configured(text)
+    try:
+        round_trip = parse_with_ai_if_configured(text)
+    except Exception:
+        round_trip = None
+    if round_trip is None:
+        await update.effective_message.reply_text(
+            "AI-разбор временно недоступен. Не страшно, соберу данные по шагам."
+        )
+        round_trip = RoundTrip()
     session = TelegramDialogSession(round_trip=round_trip, source_text=text, message_type="text")
     SESSIONS[chat_id] = session
     await _safe_write_request_log(update, session, "диалог идет", "")
@@ -139,7 +152,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def _continue_session(update: Update, session: TelegramDialogSession, text: str) -> None:
-    await _send_messages(update, session.handle_answer(text))
+    session.remember_user_answer(text)
+    ai_updated = False
+    if session.stage not in {"another_forward", "has_backhaul", "another_backhaul"}:
+        ai_updated = _try_update_session_from_ai(session)
+    if ai_updated and session.current_prompt_is_satisfied():
+        messages = session.continue_after_ai_update()
+    else:
+        messages = session.handle_answer(text, remember=False)
+    await _send_messages(update, messages)
     if not session.is_ready:
         await _safe_write_request_log(update, session, "диалог идет", "")
     await _finish_if_ready(update, session)
@@ -202,6 +223,17 @@ def _drop_session(update: Update) -> None:
 
 def _has_missing_rate(session: TelegramDialogSession) -> bool:
     return any((flight.rate_with_vat_rub or 0) == 0 for flight in session.round_trip.flights)
+
+
+def _try_update_session_from_ai(session: TelegramDialogSession) -> bool:
+    context = session.ai_context()
+    if not context:
+        return False
+    try:
+        data = parse_data_with_ai_if_configured(context)
+    except Exception:
+        return False
+    return session.apply_ai_data(data, context)
 
 
 def _looks_like_orphaned_dialog_answer(text: str) -> bool:

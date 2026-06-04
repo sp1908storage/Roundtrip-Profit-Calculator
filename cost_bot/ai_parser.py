@@ -45,6 +45,8 @@ flight:
 
 Rules:
 - If text contains "A - B", use A as loading_address and B as unloading_address.
+- The input may contain a running dialog with bot questions and user answers.
+  Use bot question labels to understand which field a short user answer belongs to.
 - If Belarus, China, or Mongolia is mentioned, set that country and status "{RU_INTERNATIONAL}".
 - VAT can only be 22 or 0.
 - "20 tons" or "20 \u0442\u043e\u043d\u043d" means 20000 kg.
@@ -78,9 +80,13 @@ COUNTRY_ALIASES = {
 
 
 def parse_with_ai_if_configured(text: str) -> RoundTrip:
+    return round_trip_from_dict(parse_data_with_ai_if_configured(text))
+
+
+def parse_data_with_ai_if_configured(text: str) -> dict[str, Any]:
     settings = get_settings()
     if not settings.openai_api_key:
-        return RoundTrip()
+        return {"forward_flights": [], "backhaul_flights": []}
 
     client = _build_client()
     response_text = _chat_completion_json(
@@ -92,8 +98,7 @@ def parse_with_ai_if_configured(text: str) -> RoundTrip:
         ],
     )
     data = json.loads(_extract_json_object(response_text))
-    data = _postprocess_data(data, text)
-    return round_trip_from_dict(data)
+    return _postprocess_data(data, text)
 
 
 def parse_image_with_ai_if_configured(image_bytes: bytes, mime_type: str = "image/jpeg") -> RoundTrip:

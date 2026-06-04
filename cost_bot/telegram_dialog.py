@@ -4,6 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from .config import COUNTRY_OPTIONS, COUNTRY_RUSSIA, DEFAULT_WEIGHT_KG
@@ -53,6 +54,7 @@ class TelegramDialogSession:
     answered_fields: set[tuple[Direction, int, str]] = field(default_factory=set)
     foreign_rate_amounts: dict[tuple[Direction, int], float] = field(default_factory=dict)
     foreign_rate_currencies: dict[tuple[Direction, int], str] = field(default_factory=dict)
+    dialog_history: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.round_trip.forward_flights = self.round_trip.forward_flights[:MAX_FORWARD_FLIGHTS]
@@ -69,8 +71,10 @@ class TelegramDialogSession:
         messages.extend(self._advance())
         return messages
 
-    def handle_answer(self, text: str) -> list[str]:
+    def handle_answer(self, text: str, remember: bool = True) -> list[str]:
         text = text.strip()
+        if remember:
+            self.remember_user_answer(text)
         if self.is_ready:
             return ["Расчет уже сформирован. Для нового запроса отправьте новую заявку или команду /new."]
 
@@ -95,6 +99,51 @@ class TelegramDialogSession:
         self.answered_fields.add(self._field_key(self.current_prompt.field))
         self.current_prompt = None
         return self._advance()
+
+    def remember_user_answer(self, text: str) -> None:
+        if not text:
+            return
+        prompt_label = self.current_prompt.label if self.current_prompt else self.stage
+        self.dialog_history.append(
+            f"{self._current_flight_label()} | Вопрос бота: {prompt_label}\nОтвет пользователя: {text}"
+        )
+        self.dialog_history = self.dialog_history[-24:]
+
+    def ai_context(self) -> str:
+        parts = []
+        if self.source_text:
+            parts.append(f"Исходная заявка:\n{self.source_text}")
+        if self.dialog_history:
+            parts.append("Дальнейший диалог:\n" + "\n\n".join(self.dialog_history))
+        return "\n\n".join(parts)
+
+    def apply_ai_data(self, data: dict[str, Any], source_text: str) -> bool:
+        changed = False
+        changed |= self._merge_flight_list(
+            self.round_trip.forward_flights,
+            data.get("forward_flights", []),
+            Direction.FORWARD,
+            source_text,
+        )
+        changed |= self._merge_flight_list(
+            self.round_trip.backhaul_flights,
+            data.get("backhaul_flights", []),
+            Direction.BACKHAUL,
+            source_text,
+        )
+        if changed and self.current_prompt and self._field_has_value(self.current_prompt.field):
+            self.answered_fields.add(self._field_key(self.current_prompt.field))
+            self.current_prompt = None
+        return changed
+
+    def continue_after_ai_update(self) -> list[str]:
+        if self.current_prompt and self._field_has_value(self.current_prompt.field):
+            self.answered_fields.add(self._field_key(self.current_prompt.field))
+            self.current_prompt = None
+        return self._advance()
+
+    def current_prompt_is_satisfied(self) -> bool:
+        return bool(self.current_prompt and self._field_has_value(self.current_prompt.field))
 
     def initial_summary(self) -> str:
         parts = ["ОК, я начал разбор заявки."]
@@ -329,7 +378,7 @@ class TelegramDialogSession:
 
         value = getattr(flight, prompt.field)
         if prompt.optional:
-            return value in (None, "")
+            return False
 
         if prompt.field in {"distance_to_loading_km", "rate_with_vat_rub"}:
             if prompt.field == "rate_with_vat_rub" and self._rate_needs_currency_clarification(flight):
@@ -344,7 +393,7 @@ class TelegramDialogSession:
         return value in (None, "")
 
     def _default_field_was_seen(self, field: str, value: object) -> bool:
-        text = self.source_text.lower()
+        text = self._all_text().lower()
         if field == "cargo_weight_kg":
             return value not in (None, DEFAULT_WEIGHT_KG) or bool(
                 re.search(r"\d+\s*(?:кг|kg|т|тонн)", text)
@@ -428,7 +477,7 @@ class TelegramDialogSession:
         return self.current_direction, self.current_index
 
     def _source_has_foreign_rate(self) -> bool:
-        return contains_foreign_currency(self.source_text)
+        return contains_foreign_currency(self._all_text())
 
     def _foreign_rate_amount(self) -> float | None:
         if self._flight_key() in self.foreign_rate_amounts:
@@ -439,10 +488,108 @@ class TelegramDialogSession:
         return float(current) if current not in (None, "", 0, 0.0) else None
 
     def _foreign_rate_currency(self) -> str:
-        return self.foreign_rate_currencies.get(self._flight_key()) or detect_currency(self.source_text)
+        return self.foreign_rate_currencies.get(self._flight_key()) or detect_currency(self._all_text())
 
     def _rate_needs_currency_clarification(self, flight: Flight) -> bool:
         return self._source_has_foreign_rate() and flight.rate_with_vat_rub not in (None, "", 0, 0.0)
+
+    def _all_text(self) -> str:
+        return "\n".join([self.source_text, *self.dialog_history])
+
+    def _merge_flight_list(
+        self,
+        target_flights: list[Flight],
+        source_flights: Any,
+        direction: Direction,
+        source_text: str,
+    ) -> bool:
+        if not isinstance(source_flights, list):
+            return False
+        changed = False
+        for index, flight_data in enumerate(source_flights[: len(target_flights)]):
+            if isinstance(flight_data, dict):
+                changed |= self._merge_flight_data(
+                    target_flights[index],
+                    flight_data,
+                    direction,
+                    index,
+                    source_text,
+                )
+        return changed
+
+    def _merge_flight_data(
+        self,
+        target: Flight,
+        data: dict[str, Any],
+        direction: Direction,
+        index: int,
+        source_text: str,
+    ) -> bool:
+        changed = False
+        for field_name in (
+            "client_short",
+            "loading_address",
+            "distance_to_loading_km",
+            "unloading_address",
+            "rate_with_vat_rub",
+            "status",
+            "country",
+            "vat_percent",
+            "distance_to_unloading_km",
+            "russian_territory_km",
+            "cargo_weight_kg",
+            "loading_type",
+        ):
+            if field_name not in data or data[field_name] in (None, ""):
+                continue
+            if field_name == "cargo_weight_kg" and not _text_mentions_weight(source_text):
+                continue
+            if field_name == "loading_type" and not _text_mentions_loading_type(source_text):
+                continue
+            value = self._coerce_field_value(field_name, data[field_name])
+            if value in (None, ""):
+                continue
+            current = getattr(target, field_name)
+            current_key = (direction, index, field_name)
+            may_update = current in (None, "") or current_key == self._field_key(field_name)
+            if field_name in {"distance_to_loading_km", "rate_with_vat_rub"}:
+                may_update = may_update or current in (0, 0.0)
+            if field_name in {"cargo_weight_kg", "loading_type"}:
+                may_update = current_key == self._field_key(field_name)
+            if may_update and current != value:
+                setattr(target, field_name, value)
+                if field_name == "rate_with_vat_rub" and contains_foreign_currency(source_text):
+                    key = (direction, index)
+                    self.foreign_rate_amounts[key] = float(value)
+                    self.foreign_rate_currencies[key] = detect_currency(source_text)
+                changed = True
+        return changed
+
+    def _coerce_field_value(self, field_name: str, value: Any) -> object:
+        try:
+            if field_name in {
+                "distance_to_loading_km",
+                "rate_with_vat_rub",
+                "distance_to_unloading_km",
+                "russian_territory_km",
+                "cargo_weight_kg",
+            }:
+                return float(value)
+            if field_name == "vat_percent":
+                return int(value)
+            if field_name == "status":
+                return value if isinstance(value, TransportStatus) else TransportStatus(value)
+            if field_name == "loading_type":
+                return value if isinstance(value, LoadingType) else LoadingType(value)
+        except (TypeError, ValueError):
+            return None
+        return value
+
+    def _field_has_value(self, field_name: str) -> bool:
+        value = getattr(self._current_flight(), field_name)
+        if field_name == "rate_with_vat_rub" and self._rate_needs_currency_clarification(self._current_flight()):
+            return False
+        return value not in (None, "")
 
 
 def normalize_answer(value: str) -> str:
@@ -470,6 +617,15 @@ def parse_non_negative_float(value: str) -> float:
     if parsed < 0:
         raise ValueError("Число не может быть отрицательным.")
     return parsed
+
+
+def _text_mentions_weight(value: str) -> bool:
+    return bool(re.search(r"\d+\s*(?:кг|kg|т|тонн)", normalize_answer(value)))
+
+
+def _text_mentions_loading_type(value: str) -> bool:
+    normalized = normalize_answer(value)
+    return any(token in normalized for token in ("сзади", "зад", "сверху", "сбоку", "верх", "бок"))
 
 
 def contains_foreign_currency(value: str) -> bool:
