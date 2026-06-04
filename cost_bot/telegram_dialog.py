@@ -17,6 +17,10 @@ MAX_BACKHAUL_FLIGHTS = 3
 YES_WORDS = {"да", "д", "yes", "y", "ок", "ok", "ага", "верно"}
 NO_WORDS = {"нет", "н", "no", "n", "не", "не надо"}
 SKIP_WORDS = {"", "-", "пропустить", "не знаю", "незнаю", "ок", "оставить", "по умолчанию"}
+FOREIGN_CURRENCY_RE = re.compile(
+    r"(\busd\b|\$|долл?|доллар|у\.?\s*е\.?|\beur\b|€|евро|\bcny\b|\brmb\b|¥|юан|юань|юаней|yuan)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,8 @@ class TelegramDialogSession:
     stage: str = "collect"
     is_ready: bool = False
     answered_fields: set[tuple[Direction, int, str]] = field(default_factory=set)
+    foreign_rate_amounts: dict[tuple[Direction, int], float] = field(default_factory=dict)
+    foreign_rate_currencies: dict[tuple[Direction, int], str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.round_trip.forward_flights = self.round_trip.forward_flights[:MAX_FORWARD_FLIGHTS]
@@ -109,7 +115,13 @@ class TelegramDialogSession:
 
         rate = ""
         if flight.rate_with_vat_rub:
-            rate = f", ставка {money(flight.rate_with_vat_rub)} с НДС"
+            if self._source_has_foreign_rate():
+                rate = (
+                    f", ставка указана как {amount(flight.rate_with_vat_rub)} "
+                    f"{self._foreign_rate_currency()}, уточню курс для пересчета"
+                )
+            else:
+                rate = f", ставка {money(flight.rate_with_vat_rub)} с НДС"
         else:
             rate = ", ставка не указана, посчитаю себестоимость без выручки"
         return f"рейс {index}: {route}{rate}"
@@ -317,6 +329,8 @@ class TelegramDialogSession:
             return value in (None, "")
 
         if prompt.field in {"distance_to_loading_km", "rate_with_vat_rub"}:
+            if prompt.field == "rate_with_vat_rub" and self._rate_needs_currency_clarification(flight):
+                return True
             return value in (None, "", 0, 0.0)
 
         if prompt.field in {"cargo_weight_kg", "loading_type"}:
@@ -355,13 +369,34 @@ class TelegramDialogSession:
                 return current
             raise ValueError("Без этого поля расчет не получится. Укажите значение или напишите /cancel.")
 
+        if prompt.field == "rate_with_vat_rub":
+            foreign_amount = self._foreign_rate_amount()
+            if contains_foreign_currency(text):
+                parsed_amount = parse_non_negative_float(text)
+                self.foreign_rate_amounts[self._flight_key()] = parsed_amount
+                self.foreign_rate_currencies[self._flight_key()] = detect_currency(text)
+                raise ValueError(
+                    f"Ставку понял как {amount(parsed_amount)} {self._foreign_rate_currency()}. "
+                    "Укажите курс к рублю или сразу ставку в рублях."
+                )
+            if foreign_amount is not None:
+                return parse_rate_with_currency_answer(text, foreign_amount)
+
         return prompt.parser(text)
 
     def _render_prompt(self, prompt: Prompt | None) -> str:
         if prompt is None:
             return ""
         prefix = self._current_flight_label()
-        parts = [f"{prefix}: {prompt.label}"]
+        label = prompt.label
+        if prompt.field == "rate_with_vat_rub":
+            foreign_amount = self._foreign_rate_amount()
+            if foreign_amount is not None:
+                label = (
+                    f"Ставка указана как {amount(foreign_amount)} {self._foreign_rate_currency()}. "
+                    "Укажите курс к рублю для пересчета или сразу ставку в рублях"
+                )
+        parts = [f"{prefix}: {label}"]
         if prompt.default is not None:
             default = prompt.default.value if hasattr(prompt.default, "value") else prompt.default
             if isinstance(prompt.default, bool):
@@ -385,6 +420,26 @@ class TelegramDialogSession:
 
     def _field_key(self, field: str) -> tuple[Direction, int, str]:
         return self.current_direction, self.current_index, field
+
+    def _flight_key(self) -> tuple[Direction, int]:
+        return self.current_direction, self.current_index
+
+    def _source_has_foreign_rate(self) -> bool:
+        return contains_foreign_currency(self.source_text)
+
+    def _foreign_rate_amount(self) -> float | None:
+        if self._flight_key() in self.foreign_rate_amounts:
+            return self.foreign_rate_amounts[self._flight_key()]
+        if not self._source_has_foreign_rate():
+            return None
+        current = self._current_flight().rate_with_vat_rub
+        return float(current) if current not in (None, "", 0, 0.0) else None
+
+    def _foreign_rate_currency(self) -> str:
+        return self.foreign_rate_currencies.get(self._flight_key()) or detect_currency(self.source_text)
+
+    def _rate_needs_currency_clarification(self, flight: Flight) -> bool:
+        return self._source_has_foreign_rate() and flight.rate_with_vat_rub not in (None, "", 0, 0.0)
 
 
 def normalize_answer(value: str) -> str:
@@ -411,6 +466,31 @@ def parse_non_negative_float(value: str) -> float:
     parsed = float(match.group(0))
     if parsed < 0:
         raise ValueError("Число не может быть отрицательным.")
+    return parsed
+
+
+def contains_foreign_currency(value: str) -> bool:
+    return bool(FOREIGN_CURRENCY_RE.search(value))
+
+
+def detect_currency(value: str) -> str:
+    normalized = normalize_answer(value)
+    if re.search(r"(\beur\b|€|евро)", normalized):
+        return "EUR"
+    if re.search(r"(\bcny\b|\brmb\b|¥|юан|юань|юаней|yuan)", normalized):
+        return "CNY"
+    if re.search(r"(\busd\b|\$|долл?|доллар|у\.?\s*е\.?)", normalized):
+        return "USD"
+    return "валюте"
+
+
+def parse_rate_with_currency_answer(value: str, foreign_amount: float) -> float:
+    parsed = parse_non_negative_float(value)
+    normalized = normalize_answer(value)
+    if re.search(r"(руб|rub|₽|р\b)", normalized):
+        return parsed
+    if "курс" in normalized or parsed <= 300:
+        return foreign_amount * parsed
     return parsed
 
 
@@ -477,3 +557,7 @@ def parse_loading_type(value: str) -> LoadingType:
 
 def money(value: float) -> str:
     return f"{value:,.0f} руб.".replace(",", " ")
+
+
+def amount(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")

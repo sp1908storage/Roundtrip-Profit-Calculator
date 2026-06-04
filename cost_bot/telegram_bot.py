@@ -20,6 +20,11 @@ START_TEXT = (
 
 SESSIONS: dict[int, TelegramDialogSession] = {}
 
+SHEETS_PUBLIC_ERROR = (
+    "Запись в Google Sheets не удалась. "
+    "Проверьте переменные Google credentials и доступ сервисного аккаунта к таблице."
+)
+
 
 def run_telegram_bot() -> None:
     settings = get_settings()
@@ -100,9 +105,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         telegram_file = await photo.get_file()
         image_bytes = bytes(await telegram_file.download_as_bytearray())
         round_trip = parse_image_with_ai_if_configured(image_bytes, mime_type="image/jpeg")
-    except Exception as exc:
+    except Exception:
         await update.effective_message.reply_text(
-            f"Не удалось обработать изображение через ИИ: {exc}"
+            "Не удалось обработать изображение через ИИ. Проверьте настройки модели и пришлите текст заявки, если нужно продолжить без скриншота."
         )
         return
 
@@ -141,8 +146,8 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
     if sheets_is_configured():
         try:
             append_result(session.round_trip, result)
-        except Exception as exc:
-            sheets_error = str(exc)
+        except Exception:
+            sheets_error = "ошибка записи результата в Google Sheets"
         await _safe_write_request_log(
             update,
             session,
@@ -160,7 +165,7 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
         parse_mode=ParseMode.HTML,
     )
     if sheets_error:
-        await update.effective_message.reply_text(f"Расчет готов, но запись в Google Sheets не удалась: {sheets_error}")
+        await update.effective_message.reply_text(f"Расчет готов, но {SHEETS_PUBLIC_ERROR}")
     _drop_session(update)
 
 
@@ -221,8 +226,8 @@ async def _safe_write_request_log(
 ) -> None:
     try:
         await _write_request_log(update, session, calculation_status, error_comment)
-    except Exception as exc:
-        await update.effective_message.reply_text(f"Запись в лист Запросы не удалась: {exc}")
+    except Exception:
+        await update.effective_message.reply_text(SHEETS_PUBLIC_ERROR)
 
 
 def _user_label(update: Update) -> str:

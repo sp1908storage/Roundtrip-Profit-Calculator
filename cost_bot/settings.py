@@ -80,6 +80,8 @@ def resolve_google_credentials_file() -> Path:
     settings = get_settings()
     if settings.google_application_credentials_json:
         return _write_temp_credentials(settings.google_application_credentials_json)
+    if settings.google_application_credentials and settings.google_application_credentials.strip().startswith("{"):
+        return _write_temp_credentials(settings.google_application_credentials)
     return require_existing_file(
         settings.google_application_credentials,
         "GOOGLE_APPLICATION_CREDENTIALS",
