@@ -13,7 +13,9 @@ load_dotenv()
 @dataclass(frozen=True)
 class Settings:
     openai_api_key: str | None
+    openai_base_url: str | None
     openai_model: str
+    openai_vision_model: str | None
     telegram_bot_token: str | None
     telegram_allowed_chat_ids: set[int]
     google_sheets_spreadsheet_id: str | None
@@ -25,7 +27,9 @@ class Settings:
 def get_settings() -> Settings:
     return Settings(
         openai_api_key=_optional_env("OPENAI_API_KEY"),
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-5"),
+        openai_base_url=_optional_env("OPENAI_BASE_URL"),
+        openai_model=os.getenv("OPENAI_MODEL", "deepseek-v4-pro"),
+        openai_vision_model=_optional_env("OPENAI_VISION_MODEL"),
         telegram_bot_token=_optional_env("TELEGRAM_BOT_TOKEN"),
         telegram_allowed_chat_ids=_parse_chat_ids(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
         google_sheets_spreadsheet_id=_normalize_spreadsheet_id(

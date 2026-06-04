@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from .ai_parser import parse_with_ai_if_configured
+from .ai_parser import parse_image_with_ai_if_configured, parse_with_ai_if_configured
 from .calculator import calculate_round_trip
 from .dialogue import FIELD_LABELS, format_result
 from .models import Direction, Flight
@@ -15,6 +15,7 @@ from .validators import missing_fields, validate_flight
 
 START_TEXT = (
     "Пришлите описание прямого рейса или круго-рейса одним сообщением. "
+    "Можно отправить текст или скриншот заявки. "
     "Я извлеку данные, проверю заявку и посчитаю себестоимость."
 )
 
@@ -27,6 +28,7 @@ def run_telegram_bot() -> None:
     application = Application.builder().token(settings.telegram_bot_token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.run_polling()
 
@@ -45,6 +47,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text = update.effective_message.text or ""
     round_trip = parse_with_ai_if_configured(text)
+    await _process_round_trip(update, round_trip)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not await _is_allowed(update):
+        return
+
+    if not update.effective_message or not update.effective_message.photo:
+        return
+
+    try:
+        photo = update.effective_message.photo[-1]
+        telegram_file = await photo.get_file()
+        image_bytes = bytes(await telegram_file.download_as_bytearray())
+        round_trip = parse_image_with_ai_if_configured(image_bytes, mime_type="image/jpeg")
+    except Exception as exc:
+        await update.effective_message.reply_text(
+            f"Не удалось обработать изображение через ИИ: {exc}"
+        )
+        return
+
+    await _process_round_trip(update, round_trip)
+
+
+async def _process_round_trip(update: Update, round_trip) -> None:
     if not round_trip.forward_flights:
         round_trip.forward_flights.append(Flight(direction=Direction.FORWARD))
 
@@ -85,4 +113,3 @@ async def _is_allowed(update: Update) -> bool:
     if update.effective_message:
         await update.effective_message.reply_text("Доступ к боту не разрешен для этого чата.")
     return False
-
