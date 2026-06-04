@@ -232,6 +232,9 @@ def _upload_image_cell_value(
 ) -> str | None:
     if not sheets_is_configured():
         return None
+    settings = get_settings()
+    if not settings.google_drive_images_folder_id:
+        return "Картинка не загружена: не задан GOOGLE_DRIVE_IMAGES_FOLDER_ID"
     try:
         return upload_request_image_to_drive(
             image_bytes=image_bytes,
@@ -239,7 +242,7 @@ def _upload_image_cell_value(
             request_id=session.request_id,
         )
     except Exception:
-        return None
+        return "Картинка не загружена в Drive: проверьте доступ сервисного аккаунта к папке и Drive API"
 
 
 async def _safe_write_request_log(

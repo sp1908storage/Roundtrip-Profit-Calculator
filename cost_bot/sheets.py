@@ -9,7 +9,7 @@ from .settings import get_settings, resolve_google_credentials_file
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive",
 ]
 
 HEADERS = [
@@ -191,6 +191,7 @@ def upload_request_image_to_drive(
         body=metadata,
         media_body=media,
         fields="id",
+        supportsAllDrives=True,
     ).execute()
     file_id = created_file["id"]
 
@@ -198,9 +199,10 @@ def upload_request_image_to_drive(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
         fields="id",
+        supportsAllDrives=True,
     ).execute()
 
-    image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+    image_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w600"
     return f'=IMAGE("{image_url}")'
 
 
