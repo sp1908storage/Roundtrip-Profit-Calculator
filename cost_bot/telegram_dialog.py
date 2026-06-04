@@ -314,6 +314,9 @@ class TelegramDialogSession:
         if prompt.optional:
             return value in (None, "")
 
+        if prompt.field in {"distance_to_loading_km", "rate_with_vat_rub"}:
+            return value in (None, "", 0, 0.0)
+
         if prompt.field in {"cargo_weight_kg", "loading_type"}:
             if self._default_field_was_seen(prompt.field, value):
                 return False
