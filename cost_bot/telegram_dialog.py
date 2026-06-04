@@ -225,6 +225,12 @@ class TelegramDialogSession:
 
     def _next_field_prompt(self) -> Prompt | None:
         flight = self._current_flight()
+        for prompt in self._field_prompts(flight):
+            if self._should_ask(prompt, flight):
+                return prompt
+        return None
+
+    def _field_prompts(self, flight: Flight) -> list[Prompt]:
         prompts = [
             Prompt("client_short", "Клиент кратко", parse_optional_text, optional=True),
             Prompt(
@@ -300,11 +306,7 @@ class TelegramDialogSession:
                 ),
             ]
         )
-
-        for prompt in prompts:
-            if self._should_ask(prompt, flight):
-                return prompt
-        return None
+        return prompts
 
     def _should_ask(self, prompt: Prompt, flight: Flight) -> bool:
         if self._field_key(prompt.field) in self.answered_fields:
@@ -335,11 +337,10 @@ class TelegramDialogSession:
         return False
 
     def _prompt_for_field(self, field: str) -> Prompt | None:
-        answered = self.answered_fields.copy()
-        self.answered_fields.discard(self._field_key(field))
-        prompt = self._next_field_prompt()
-        self.answered_fields = answered
-        return prompt
+        for prompt in self._field_prompts(self._current_flight()):
+            if prompt.field == field:
+                return prompt
+        return None
 
     def _parse_prompt_value(self, prompt: Prompt, text: str) -> object:
         normalized = normalize_answer(text)
