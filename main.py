@@ -1,6 +1,5 @@
-from cost_bot.dialogue import run_cli
+from desktop_app import main as run_desktop_app
 
 
 if __name__ == "__main__":
-    run_cli()
-
+    run_desktop_app()
