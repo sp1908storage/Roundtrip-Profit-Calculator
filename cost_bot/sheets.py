@@ -1,5 +1,4 @@
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
 from .calculator import RoundTripCost
 from .models import Flight, RoundTrip
@@ -111,6 +110,22 @@ def append_request_log(
     for index, flight in enumerate(round_trip.backhaul_flights[:3], 1):
         _fill_request_flight(headers, row, f"Обратный {index}", flight)
 
+    existing_row = _find_row_by_first_column(
+        service,
+        settings.google_sheets_spreadsheet_id,
+        REQUESTS_WORKSHEET_NAME,
+        request_id,
+    )
+    if existing_row:
+        end_column = _column_name(len(headers))
+        service.spreadsheets().values().update(
+            spreadsheetId=settings.google_sheets_spreadsheet_id,
+            range=_range(REQUESTS_WORKSHEET_NAME, f"A{existing_row}:{end_column}{existing_row}"),
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]},
+        ).execute()
+        return
+
     service.spreadsheets().values().append(
         spreadsheetId=settings.google_sheets_spreadsheet_id,
         range=_range(REQUESTS_WORKSHEET_NAME, "A1"),
@@ -138,6 +153,17 @@ def _read_headers(service, spreadsheet_id: str, worksheet: str) -> list[str]:
     ).execute()
     values = response.get("values", [])
     return values[0] if values else []
+
+
+def _find_row_by_first_column(service, spreadsheet_id: str, worksheet: str, value: str) -> int | None:
+    response = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=_range(worksheet, "A:A"),
+    ).execute()
+    for index, row in enumerate(response.get("values", []), 1):
+        if row and row[0] == value:
+            return index
+    return None
 
 
 def _fill_request_flight(headers: list[str], row: list, prefix: str, flight: Flight) -> None:
@@ -188,8 +214,17 @@ def _normalize_header(value: str) -> str:
     return " ".join(value.lower().replace("ё", "е").split())
 
 
+def _column_name(index: int) -> str:
+    name = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
 def _now_moscow_like() -> str:
-    return datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Moscow")).strftime("%Y-%m-%d %H:%M:%S")
+    moscow_tz = timezone(timedelta(hours=3))
+    return datetime.now(moscow_tz).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _build_sheets_service(credentials_path: str | None = None):

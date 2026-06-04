@@ -78,6 +78,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     round_trip = parse_with_ai_if_configured(text)
     session = TelegramDialogSession(round_trip=round_trip, source_text=text, message_type="text")
     SESSIONS[chat_id] = session
+    await _safe_write_request_log(update, session, "диалог идет", "")
     await _send_messages(update, session.start())
     await _finish_if_ready(update, session)
 
@@ -112,12 +113,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         image_file_id=photo.file_id,
     )
     SESSIONS[chat_id] = session
+    await _safe_write_request_log(update, session, "диалог идет", "")
     await _send_messages(update, session.start())
     await _finish_if_ready(update, session)
 
 
 async def _continue_session(update: Update, session: TelegramDialogSession, text: str) -> None:
     await _send_messages(update, session.handle_answer(text))
+    if not session.is_ready:
+        await _safe_write_request_log(update, session, "диалог идет", "")
     await _finish_if_ready(update, session)
 
 
@@ -129,10 +133,7 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
         result = calculate_round_trip(session.round_trip)
     except ValueError as exc:
         await update.effective_message.reply_text(f"Не удалось рассчитать: {exc}")
-        try:
-            await _write_request_log(update, session, "ошибка", str(exc))
-        except Exception as log_exc:
-            await update.effective_message.reply_text(f"Запись в лист Запросы не удалась: {log_exc}")
+        await _safe_write_request_log(update, session, "ошибка", str(exc))
         _drop_session(update)
         return
 
@@ -140,9 +141,14 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
     if sheets_is_configured():
         try:
             append_result(session.round_trip, result)
-            await _write_request_log(update, session, "расчет выполнен", "")
         except Exception as exc:
             sheets_error = str(exc)
+        await _safe_write_request_log(
+            update,
+            session,
+            "расчет выполнен",
+            sheets_error or "",
+        )
 
     if _has_missing_rate(session):
         await update.effective_message.reply_text(
@@ -205,6 +211,18 @@ async def _write_request_log(
         error_comment=error_comment,
         round_trip=session.round_trip,
     )
+
+
+async def _safe_write_request_log(
+    update: Update,
+    session: TelegramDialogSession,
+    calculation_status: str,
+    error_comment: str,
+) -> None:
+    try:
+        await _write_request_log(update, session, calculation_status, error_comment)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Запись в лист Запросы не удалась: {exc}")
 
 
 def _user_label(update: Update) -> str:

@@ -1,11 +1,13 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
+from uuid import uuid4
 
 from .calculator import RoundTripCost, calculate_round_trip
 from .config import COUNTRY_OPTIONS, COUNTRY_RUSSIA, DEFAULT_WEIGHT_KG
 from .dialogue import format_result
 from .models import Direction, Flight, LoadingType, RoundTrip, TransportStatus
-from .sheets import append_result, is_configured as sheets_is_configured
+from .sheets import append_request_log, append_result, is_configured as sheets_is_configured
 from .validators import validate_flight
 
 
@@ -22,6 +24,8 @@ class Prompt:
 class DesktopDialogSession:
     def __init__(self) -> None:
         self.round_trip = RoundTrip(forward_flights=[Flight(direction=Direction.FORWARD)])
+        self.request_id = f"desk-{datetime.now(timezone.utc):%Y%m%d%H%M%S}-{uuid4().hex[:8]}"
+        self.raw_entries: list[str] = []
         self.current_direction = Direction.FORWARD
         self.current_index = 0
         self.current_prompt: Prompt | None = None
@@ -31,6 +35,7 @@ class DesktopDialogSession:
 
     def start(self) -> str:
         self.current_prompt = self._next_field_prompt()
+        self._safe_log_request("диалог идет")
         return (
             "Начинаем расчет круго-рейса.\n"
             "Отвечайте на вопросы по очереди. Для значений по умолчанию можно оставить поле пустым.\n\n"
@@ -39,6 +44,7 @@ class DesktopDialogSession:
 
     def handle(self, text: str) -> list[str]:
         text = text.strip()
+        self.raw_entries.append(text or "(пусто)")
         if self.stage == "done":
             return ["Расчет завершен. Нажмите \"Новый расчет\", чтобы начать заново."]
         if self.stage == "save":
@@ -58,6 +64,7 @@ class DesktopDialogSession:
         setattr(self._current_flight(), self.current_prompt.field, value)
         self.answered_fields.add(self._field_key(self.current_prompt.field))
         self.current_prompt = self._next_field_prompt()
+        self._safe_log_request("диалог идет")
         if self.current_prompt:
             return [self._render_prompt(self.current_prompt)]
         return self._advance_after_flight()
@@ -182,7 +189,9 @@ class DesktopDialogSession:
             self.result = calculate_round_trip(self.round_trip)
         except ValueError as exc:
             self.stage = "done"
+            self._safe_log_request("ошибка", str(exc))
             return [f"Не удалось рассчитать: {exc}"]
+        self._safe_log_request("расчет выполнен")
         self.stage = "save"
         self.current_prompt = Prompt(
             field="save",
@@ -231,6 +240,7 @@ class DesktopDialogSession:
                 self.current_index += 1
                 self.stage = "collect"
                 self.current_prompt = self._next_field_prompt()
+                self._safe_log_request("диалог идет")
                 return ["Добавлен прямой рейс.", self._render_prompt(self.current_prompt)]
             self.stage = "has_backhaul"
             self.current_prompt = Prompt(
@@ -240,6 +250,7 @@ class DesktopDialogSession:
                 default=False,
                 choices=["да", "нет"],
             )
+            self._safe_log_request("диалог идет")
             return [self._render_prompt(self.current_prompt)]
 
         if self.stage == "has_backhaul":
@@ -249,6 +260,7 @@ class DesktopDialogSession:
                 self.round_trip.backhaul_flights.append(Flight(direction=Direction.BACKHAUL))
                 self.stage = "collect"
                 self.current_prompt = self._next_field_prompt()
+                self._safe_log_request("диалог идет")
                 return ["Добавлен обратный рейс.", self._render_prompt(self.current_prompt)]
             return self._complete_and_calculate()
 
@@ -258,10 +270,31 @@ class DesktopDialogSession:
                 self.current_index += 1
                 self.stage = "collect"
                 self.current_prompt = self._next_field_prompt()
+                self._safe_log_request("диалог идет")
                 return ["Добавлен обратный рейс.", self._render_prompt(self.current_prompt)]
             return self._complete_and_calculate()
 
         return ["Сейчас этот ответ не ожидается."]
+
+    def _safe_log_request(self, calculation_status: str, error_comment: str = "") -> None:
+        if not sheets_is_configured():
+            return
+        try:
+            append_request_log(
+                request_id=self.request_id,
+                source="Desktop",
+                user="Desktop",
+                message_type="desktop",
+                raw_text="\n".join(self.raw_entries) or "Desktop dialog started",
+                image_file_id=None,
+                ai_model="",
+                ai_status="без AI",
+                calculation_status=calculation_status,
+                error_comment=error_comment,
+                round_trip=self.round_trip,
+            )
+        except Exception:
+            return
 
 
 def parse_optional_text(value: str) -> str | None:
