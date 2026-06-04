@@ -108,7 +108,7 @@ class TelegramDialogSession:
             route = f"выгрузка {flight.unloading_address}"
 
         rate = ""
-        if flight.rate_with_vat_rub is not None:
+        if flight.rate_with_vat_rub:
             rate = f", ставка {money(flight.rate_with_vat_rub)} с НДС"
         else:
             rate = ", ставка не указана, посчитаю себестоимость без выручки"
@@ -363,6 +363,8 @@ class TelegramDialogSession:
         parts = [f"{prefix}: {prompt.label}"]
         if prompt.default is not None:
             default = prompt.default.value if hasattr(prompt.default, "value") else prompt.default
+            if isinstance(prompt.default, bool):
+                default = "да" if prompt.default else "нет"
             parts.append(f"по умолчанию {default}")
         if prompt.optional:
             parts.append("можно ответить 'пропустить'")
