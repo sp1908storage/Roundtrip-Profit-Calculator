@@ -267,10 +267,10 @@ def _set_exact(headers: list[str], row: list, header: str, value) -> None:
 
 
 def _set_by_tokens(headers: list[str], row: list, prefix: str, tokens: list[str], value) -> None:
-    prefix_normalized = _normalize_header(prefix)
+    prefix_tokens = _normalize_header(prefix).split()
     for index, header in enumerate(headers):
         normalized = _normalize_header(header)
-        if normalized.startswith(prefix_normalized) and all(token in normalized for token in tokens):
+        if all(token in normalized for token in prefix_tokens) and all(token in normalized for token in tokens):
             row[index] = _cell_value(value)
             return
 

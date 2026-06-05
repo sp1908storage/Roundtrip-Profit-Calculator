@@ -378,7 +378,7 @@ class TelegramDialogSession:
 
         value = getattr(flight, prompt.field)
         if prompt.optional:
-            return False
+            return value in (None, "")
 
         if prompt.field in {"distance_to_loading_km", "rate_with_vat_rub"}:
             if prompt.field == "rate_with_vat_rub" and self._rate_needs_currency_clarification(flight):

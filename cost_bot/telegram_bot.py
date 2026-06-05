@@ -11,8 +11,9 @@ from .ai_parser import (
     parse_with_ai_if_configured,
 )
 from .calculator import calculate_round_trip
-from .dialogue import format_result
-from .models import RoundTrip
+from .config import DEFAULT_COST_CONFIG
+from .dialogue import format_result, money
+from .models import RoundTrip, TransportStatus
 from .settings import get_settings
 from .sheets import (
     append_request_log,
@@ -30,6 +31,7 @@ START_TEXT = (
 )
 
 SESSIONS: dict[int, TelegramDialogSession] = {}
+LAST_RESULTS: dict[int, tuple[TelegramDialogSession, object]] = {}
 
 SHEETS_PUBLIC_ERROR = (
     "Запись в Google Sheets не удалась. "
@@ -89,6 +91,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = update.effective_message.text or ""
     if chat_id in SESSIONS:
         await _continue_session(update, SESSIONS[chat_id], text)
+        return
+
+    if chat_id in LAST_RESULTS and _looks_like_result_followup(text):
+        await update.effective_message.reply_text(_answer_result_followup(text, LAST_RESULTS[chat_id]))
         return
 
     if _looks_like_orphaned_dialog_answer(text):
@@ -202,6 +208,9 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
     )
     if sheets_error:
         await update.effective_message.reply_text(f"Расчет готов, но {SHEETS_PUBLIC_ERROR}")
+    chat_id = _chat_id(update)
+    if chat_id is not None:
+        LAST_RESULTS[chat_id] = (session, result)
     _drop_session(update)
 
 
@@ -223,6 +232,61 @@ def _drop_session(update: Update) -> None:
 
 def _has_missing_rate(session: TelegramDialogSession) -> bool:
     return any((flight.rate_with_vat_rub or 0) == 0 for flight in session.round_trip.flights)
+
+
+def _looks_like_result_followup(text: str) -> bool:
+    normalized = text.strip().lower().replace("ё", "е")
+    if "?" in normalized:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "как считал",
+            "как посчитал",
+            "почему",
+            "откуда",
+            "платные дороги",
+            "топливо",
+            "обслуживание",
+            "расход",
+            "себестоимость",
+            "прибыль",
+        )
+    )
+
+
+def _answer_result_followup(text: str, last_result: tuple[TelegramDialogSession, object]) -> str:
+    del text
+    _session, result = last_result
+    config = DEFAULT_COST_CONFIG
+    lines = [
+        "Платные дороги сейчас считаются по простой формуле:",
+        f"платные дороги = километры по РФ x {config.tolls_rub_per_km:g} руб./км.",
+        "",
+    ]
+    total_tolls = 0.0
+    for index, item in enumerate(result.flights, 1):
+        flight = item.flight
+        distance_to_loading = flight.distance_to_loading_km or 0
+        distance_to_unloading = flight.distance_to_unloading_km or 0
+        total_km = distance_to_loading + distance_to_unloading
+        foreign_km = 0.0
+        if flight.status == TransportStatus.INTERNATIONAL:
+            russian_km = flight.russian_territory_km or 0
+            foreign_km = max(distance_to_unloading - russian_km, 0)
+        domestic_km = total_km - foreign_km
+        total_tolls += item.tolls_rub
+        lines.append(
+            f"Рейс {index}: {domestic_km:g} км по РФ x {config.tolls_rub_per_km:g} = {money(item.tolls_rub)}"
+        )
+    lines.extend(
+        [
+            "",
+            f"Итого платные дороги: {money(total_tolls)}",
+            "Это пока демо-формула. Позже заменим её на реальные правила/тарифы по маршруту.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _try_update_session_from_ai(session: TelegramDialogSession) -> bool:
