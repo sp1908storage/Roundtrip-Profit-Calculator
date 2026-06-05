@@ -44,6 +44,36 @@ HEADERS = [
 ]
 
 REQUESTS_WORKSHEET_NAME = "Запросы"
+SUMMARY_WORKSHEET_NAME = "Расчеты Итог"
+
+SUMMARY_HEADERS = [
+    "round_trip_id",
+    "Дата и время",
+    "Прямых рейсов",
+    "Обратных рейсов",
+    "Всего рейсов",
+    "Есть обратная загрузка",
+    "Маршрут",
+    "Клиенты",
+    "Страны",
+    "Международных рейсов",
+    "Общий пробег до загрузки, км",
+    "Общий пробег до выгрузки, км",
+    "Пробег по РФ, км",
+    "Общий пробег, км",
+    "Максимальный вес, кг",
+    "Общая выручка, руб",
+    "Топливо, руб",
+    "Обслуживание, руб",
+    "Водитель и постоянные расходы, руб",
+    "Платные дороги, руб",
+    "Доплата за тип загрузки, руб",
+    "Международные расходы, руб",
+    "Общая себестоимость, руб",
+    "Расчетная прибыль, руб",
+    "Рентабельность, %",
+    "Текст Ответа",
+]
 
 
 def append_result(
@@ -83,6 +113,34 @@ def append_result(
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
+    ).execute()
+    _append_result_summary(
+        service,
+        settings.google_sheets_spreadsheet_id,
+        round_trip_id,
+        round_trip,
+        result,
+        response_text,
+    )
+
+
+def _append_result_summary(
+    service,
+    spreadsheet_id: str,
+    round_trip_id: str,
+    round_trip: RoundTrip,
+    result: RoundTripCost,
+    response_text: str | None,
+) -> None:
+    _ensure_worksheet(service, spreadsheet_id, SUMMARY_WORKSHEET_NAME)
+    headers = _ensure_summary_headers(service, spreadsheet_id)
+    row = _summary_result_row(round_trip_id, round_trip, result, headers, response_text)
+    service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=_range(SUMMARY_WORKSHEET_NAME, "A1"),
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body={"values": [row]},
     ).execute()
 
 
@@ -302,6 +360,16 @@ def _set_generic_by_tokens(headers: list[str], row: list, tokens: list[str], val
             return
 
 
+def _set_summary_by_tokens(headers: list[str], row: list, tokens: list[str], value) -> None:
+    for index, header in enumerate(headers):
+        normalized = _normalize_header(header)
+        if "прямой рейс" in normalized or "обратный рейс" in normalized:
+            continue
+        if all(token in normalized for token in tokens):
+            row[index] = _cell_value(value)
+            return
+
+
 def _set_loading_type(headers: list[str], row: list, prefix: str, value) -> None:
     prefix_tokens = _normalize_header(prefix).split()
     for index, header in enumerate(headers):
@@ -326,6 +394,23 @@ def _cell_value(value):
 
 def _normalize_header(value: str) -> str:
     return " ".join(value.lower().replace("ё", "е").split())
+
+
+def _join_unique(values) -> str:
+    result = []
+    seen = set()
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        normalized = _normalize_header(text)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(text)
+    return ", ".join(result)
 
 
 def _column_name(index: int) -> str:
@@ -467,14 +552,14 @@ def _ensure_worksheet(service, spreadsheet_id: str, worksheet: str) -> None:
 def _ensure_headers(service, spreadsheet_id: str, worksheet: str) -> None:
     response = service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=_range(worksheet, "A1:AA1"),
+        range=_range(worksheet, f"A1:{_column_name(len(HEADERS))}1"),
     ).execute()
     values = response.get("values", [])
     if values and values[0] == HEADERS:
         return
     service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
-        range=_range(worksheet, "A1:AA1"),
+        range=_range(worksheet, f"A1:{_column_name(len(HEADERS))}1"),
         valueInputOption="USER_ENTERED",
         body={"values": [HEADERS]},
     ).execute()
@@ -505,6 +590,141 @@ def _ensure_result_headers(service, spreadsheet_id: str, worksheet: str) -> list
             body={"values": [headers]},
         ).execute()
     return headers
+
+
+def _ensure_summary_headers(service, spreadsheet_id: str) -> list[str]:
+    response = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=_range(SUMMARY_WORKSHEET_NAME, "1:1"),
+    ).execute()
+    values = response.get("values", [])
+    if not values:
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=_range(SUMMARY_WORKSHEET_NAME, f"A1:{_column_name(len(SUMMARY_HEADERS))}1"),
+            valueInputOption="USER_ENTERED",
+            body={"values": [SUMMARY_HEADERS]},
+        ).execute()
+        return SUMMARY_HEADERS.copy()
+
+    headers = values[0]
+    if "Текст Ответа" not in headers:
+        headers = [*headers, "Текст Ответа"]
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=_range(SUMMARY_WORKSHEET_NAME, f"A1:{_column_name(len(headers))}1"),
+            valueInputOption="USER_ENTERED",
+            body={"values": [headers]},
+        ).execute()
+    return headers
+
+
+def _summary_result_row(
+    round_trip_id: str,
+    round_trip: RoundTrip,
+    result: RoundTripCost,
+    headers: list[str] | None = None,
+    response_text: str | None = None,
+) -> list:
+    forward_count = len(round_trip.forward_flights)
+    backhaul_count = len(round_trip.backhaul_flights)
+    flights = [item.flight for item in result.flights]
+    route = " | ".join(
+        f"{flight.loading_address or '?'} -> {flight.unloading_address or '?'}"
+        for flight in flights
+    )
+    clients = _join_unique(flight.client_short for flight in flights)
+    countries = _join_unique(flight.country for flight in flights)
+    international_count = sum(
+        1
+        for flight in flights
+        if flight.status and "международ" in _normalize_header(flight.status.value)
+    )
+    distance_to_loading = sum(flight.distance_to_loading_km or 0 for flight in flights)
+    distance_to_unloading = sum(flight.distance_to_unloading_km or 0 for flight in flights)
+    russian_territory = sum(flight.russian_territory_km or 0 for flight in flights)
+    max_weight = max((flight.cargo_weight_kg or 0 for flight in flights), default=0)
+    fuel = sum(item.fuel_rub for item in result.flights)
+    maintenance = sum(item.maintenance_rub for item in result.flights)
+    driver_and_fixed = sum(item.driver_and_fixed_rub for item in result.flights)
+    tolls = sum(item.tolls_rub for item in result.flights)
+    loading_extra = sum(item.loading_extra_rub for item in result.flights)
+    international_extra = sum(item.international_extra_rub for item in result.flights)
+    margin_percent = (
+        result.total_profit_rub / result.total_revenue_rub * 100
+        if result.total_revenue_rub
+        else ""
+    )
+    default_row = [
+        round_trip_id,
+        _now_moscow_like(),
+        forward_count,
+        backhaul_count,
+        len(result.flights),
+        "да" if backhaul_count else "нет",
+        route,
+        clients,
+        countries,
+        international_count,
+        distance_to_loading,
+        distance_to_unloading,
+        russian_territory,
+        distance_to_loading + distance_to_unloading,
+        max_weight,
+        result.total_revenue_rub,
+        fuel,
+        maintenance,
+        driver_and_fixed,
+        tolls,
+        loading_extra,
+        international_extra,
+        result.total_cost_rub,
+        result.total_profit_rub,
+        margin_percent,
+        response_text or "",
+    ]
+    if not headers:
+        return default_row
+
+    row = [""] * len(headers)
+    summary_values = dict(zip(SUMMARY_HEADERS, default_row, strict=False))
+    for header, value in summary_values.items():
+        _set_exact(headers, row, header, value)
+
+    _set_summary_by_tokens(headers, row, ["id", "рейс"], round_trip_id)
+    _set_summary_by_tokens(headers, row, ["дата"], default_row[1])
+    _set_summary_by_tokens(headers, row, ["время"], default_row[1])
+    _set_summary_by_tokens(headers, row, ["прям", "рейс"], forward_count)
+    _set_summary_by_tokens(headers, row, ["обратн", "рейс"], backhaul_count)
+    _set_summary_by_tokens(headers, row, ["всего", "рейс"], len(result.flights))
+    _set_summary_by_tokens(headers, row, ["есть", "обрат"], "да" if backhaul_count else "нет")
+    _set_summary_by_tokens(headers, row, ["маршрут"], route)
+    _set_summary_by_tokens(headers, row, ["клиент"], clients)
+    _set_summary_by_tokens(headers, row, ["стран"], countries)
+    _set_summary_by_tokens(headers, row, ["международ", "рейс"], international_count)
+    _set_summary_by_tokens(headers, row, ["пробег", "загруз"], distance_to_loading)
+    _set_summary_by_tokens(headers, row, ["пробег", "выгруз"], distance_to_unloading)
+    _set_summary_by_tokens(headers, row, ["пробег", "рф"], russian_territory)
+    _set_summary_by_tokens(headers, row, ["общ", "пробег"], distance_to_loading + distance_to_unloading)
+    _set_summary_by_tokens(headers, row, ["макс", "вес"], max_weight)
+    _set_summary_by_tokens(headers, row, ["выруч"], result.total_revenue_rub)
+    _set_summary_by_tokens(headers, row, ["топлив"], fuel)
+    _set_summary_by_tokens(headers, row, ["обслуж"], maintenance)
+    _set_summary_by_tokens(headers, row, ["водител"], driver_and_fixed)
+    _set_summary_by_tokens(headers, row, ["платн"], tolls)
+    _set_summary_by_tokens(headers, row, ["доплат", "загруз"], loading_extra)
+    _set_summary_by_tokens(headers, row, ["международ", "расход"], international_extra)
+    _set_summary_by_tokens(headers, row, ["себестоим"], result.total_cost_rub)
+    _set_summary_by_tokens(headers, row, ["прибыл"], result.total_profit_rub)
+    _set_summary_by_tokens(headers, row, ["рентаб"], margin_percent)
+    _set_exact(headers, row, "Текст Ответа", response_text or "")
+    _set_summary_by_tokens(headers, row, ["текст", "ответ"], response_text or "")
+
+    for index, flight in enumerate(round_trip.forward_flights[:3], 1):
+        _fill_request_flight(headers, row, f"Прямой {index}", flight)
+    for index, flight in enumerate(round_trip.backhaul_flights[:3], 1):
+        _fill_request_flight(headers, row, f"Обратный {index}", flight)
+    return row
 
 
 def _flight_cost_row(
