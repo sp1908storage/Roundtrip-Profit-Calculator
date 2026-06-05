@@ -58,7 +58,13 @@ def run_cli() -> None:
     response_text = format_result(result)
     print(response_text)
     if sheets_is_configured():
-        append_result(round_trip, result, response_text=response_text)
+        append_result(
+            round_trip,
+            result,
+            response_text=response_text,
+            request_source="CLI",
+            request_user="CLI",
+        )
         print("\nРезультат записан в Google Sheets.")
 
 

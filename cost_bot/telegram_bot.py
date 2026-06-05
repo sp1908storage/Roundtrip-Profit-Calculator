@@ -196,7 +196,14 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
 
     if sheets_is_configured():
         try:
-            append_result(session.round_trip, result, response_text=saved_response_text)
+            append_result(
+                session.round_trip,
+                result,
+                response_text=saved_response_text,
+                request_id=session.request_id,
+                request_source="Telegram",
+                request_user=_user_label(update),
+            )
         except Exception:
             sheets_error = "ошибка записи результата в Google Sheets"
         await _safe_write_request_log(

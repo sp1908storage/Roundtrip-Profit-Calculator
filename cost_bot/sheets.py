@@ -47,8 +47,12 @@ REQUESTS_WORKSHEET_NAME = "Запросы"
 SUMMARY_WORKSHEET_NAME = "Расчеты Итог"
 
 SUMMARY_HEADERS = [
-    "round_trip_id",
+    "ID запроса",
     "Дата и время",
+    "Источник",
+    "Пользователь",
+    "round_trip_id",
+    "Дата расчета",
     "Прямых рейсов",
     "Обратных рейсов",
     "Всего рейсов",
@@ -80,6 +84,10 @@ def append_result(
     round_trip: RoundTrip,
     result: RoundTripCost,
     response_text: str | None = None,
+    request_id: str | None = None,
+    request_source: str | None = None,
+    request_user: str | None = None,
+    request_datetime: str | None = None,
 ) -> None:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
@@ -121,6 +129,10 @@ def append_result(
         round_trip,
         result,
         response_text,
+        request_id,
+        request_source,
+        request_user,
+        request_datetime,
     )
 
 
@@ -131,10 +143,29 @@ def _append_result_summary(
     round_trip: RoundTrip,
     result: RoundTripCost,
     response_text: str | None,
+    request_id: str | None,
+    request_source: str | None,
+    request_user: str | None,
+    request_datetime: str | None,
 ) -> None:
     _ensure_worksheet(service, spreadsheet_id, SUMMARY_WORKSHEET_NAME)
     headers = _ensure_summary_headers(service, spreadsheet_id)
-    row = _summary_result_row(round_trip_id, round_trip, result, headers, response_text)
+    request_metadata = _read_request_metadata(
+        service,
+        spreadsheet_id,
+        request_id=request_id,
+        fallback_source=request_source,
+        fallback_user=request_user,
+        fallback_datetime=request_datetime,
+    )
+    row = _summary_result_row(
+        round_trip_id,
+        round_trip,
+        result,
+        headers,
+        response_text,
+        request_metadata,
+    )
     service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
         range=_range(SUMMARY_WORKSHEET_NAME, "A1"),
@@ -310,6 +341,93 @@ def _find_row_by_first_column(service, spreadsheet_id: str, worksheet: str, valu
         if row and row[0] == value:
             return index
     return None
+
+
+def _read_request_metadata(
+    service,
+    spreadsheet_id: str,
+    *,
+    request_id: str | None,
+    fallback_source: str | None = None,
+    fallback_user: str | None = None,
+    fallback_datetime: str | None = None,
+) -> dict[str, str]:
+    metadata = {
+        "request_id": request_id or "",
+        "request_datetime": fallback_datetime or _now_moscow_like(),
+        "request_source": fallback_source or "",
+        "request_user": fallback_user or "",
+    }
+    if not request_id:
+        return metadata
+
+    try:
+        response = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=_range(REQUESTS_WORKSHEET_NAME, "A:ZZ"),
+        ).execute()
+    except Exception:
+        return metadata
+
+    values = response.get("values", [])
+    if not values:
+        return metadata
+    headers = values[0]
+    id_index = _find_header_index(headers, ["id", "запрос"])
+    if id_index is None:
+        id_index = 0
+
+    for row in values[1:]:
+        if len(row) <= id_index or row[id_index] != request_id:
+            continue
+        metadata["request_datetime"] = _row_value_by_header(
+            headers,
+            row,
+            exact="Дата и время",
+            tokens=["дата", "время"],
+            fallback=metadata["request_datetime"],
+        )
+        metadata["request_source"] = _row_value_by_header(
+            headers,
+            row,
+            exact="Источник",
+            tokens=["источник"],
+            fallback=metadata["request_source"],
+        )
+        metadata["request_user"] = _row_value_by_header(
+            headers,
+            row,
+            exact="Пользователь",
+            tokens=["пользователь"],
+            fallback=metadata["request_user"],
+        )
+        return metadata
+    return metadata
+
+
+def _find_header_index(headers: list[str], tokens: list[str]) -> int | None:
+    for index, header in enumerate(headers):
+        normalized = _normalize_header(header)
+        if all(token in normalized for token in tokens):
+            return index
+    return None
+
+
+def _row_value_by_header(
+    headers: list[str],
+    row: list,
+    *,
+    exact: str,
+    tokens: list[str],
+    fallback: str,
+) -> str:
+    try:
+        index = headers.index(exact)
+    except ValueError:
+        index = _find_header_index(headers, tokens)
+    if index is None or len(row) <= index:
+        return fallback
+    return str(row[index])
 
 
 def _fill_request_flight(headers: list[str], row: list, prefix: str, flight: Flight) -> None:
@@ -625,7 +743,14 @@ def _summary_result_row(
     result: RoundTripCost,
     headers: list[str] | None = None,
     response_text: str | None = None,
+    request_metadata: dict[str, str] | None = None,
 ) -> list:
+    request_metadata = request_metadata or {}
+    request_id = request_metadata.get("request_id", "")
+    request_datetime = request_metadata.get("request_datetime", _now_moscow_like())
+    request_source = request_metadata.get("request_source", "")
+    request_user = request_metadata.get("request_user", "")
+    calculation_datetime = _now_moscow_like()
     forward_count = len(round_trip.forward_flights)
     backhaul_count = len(round_trip.backhaul_flights)
     flights = [item.flight for item in result.flights]
@@ -656,8 +781,12 @@ def _summary_result_row(
         else ""
     )
     default_row = [
+        request_id,
+        request_datetime,
+        request_source,
+        request_user,
         round_trip_id,
-        _now_moscow_like(),
+        calculation_datetime,
         forward_count,
         backhaul_count,
         len(result.flights),
@@ -691,9 +820,17 @@ def _summary_result_row(
     for header, value in summary_values.items():
         _set_exact(headers, row, header, value)
 
+    _set_exact(headers, row, "ID запроса", request_id)
+    _set_exact(headers, row, "Дата и время", request_datetime)
+    _set_exact(headers, row, "Источник", request_source)
+    _set_exact(headers, row, "Пользователь", request_user)
+    _set_summary_by_tokens(headers, row, ["id", "запрос"], request_id)
+    _set_summary_by_tokens(headers, row, ["дата", "время"], request_datetime)
+    _set_summary_by_tokens(headers, row, ["источник"], request_source)
+    _set_summary_by_tokens(headers, row, ["пользователь"], request_user)
     _set_summary_by_tokens(headers, row, ["id", "рейс"], round_trip_id)
-    _set_summary_by_tokens(headers, row, ["дата"], default_row[1])
-    _set_summary_by_tokens(headers, row, ["время"], default_row[1])
+    _set_exact(headers, row, "Дата расчета", calculation_datetime)
+    _set_summary_by_tokens(headers, row, ["дата", "расчет"], calculation_datetime)
     _set_summary_by_tokens(headers, row, ["прям", "рейс"], forward_count)
     _set_summary_by_tokens(headers, row, ["обратн", "рейс"], backhaul_count)
     _set_summary_by_tokens(headers, row, ["всего", "рейс"], len(result.flights))

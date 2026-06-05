@@ -176,7 +176,14 @@ class DesktopDialogSession:
         if not sheets_is_configured():
             return ["Google Sheets не настроен. Расчет не записан."]
         try:
-            append_result(self.round_trip, self.result, response_text=format_result(self.result))
+            append_result(
+                self.round_trip,
+                self.result,
+                response_text=format_result(self.result),
+                request_id=self.request_id,
+                request_source="Desktop",
+                request_user="Desktop",
+            )
         except Exception as exc:
             return [
                 "Расчет готов, но запись в Google Sheets не удалась.",
