@@ -55,9 +55,10 @@ def run_cli() -> None:
         return
 
     result = calculate_round_trip(round_trip)
-    print(format_result(result))
+    response_text = format_result(result)
+    print(response_text)
     if sheets_is_configured():
-        append_result(round_trip, result)
+        append_result(round_trip, result, response_text=response_text)
         print("\nРезультат записан в Google Sheets.")
 
 

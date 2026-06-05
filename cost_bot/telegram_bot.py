@@ -185,9 +185,18 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
         return
 
     sheets_error = None
+    missing_rate_text = ""
+    if _has_missing_rate(session):
+        missing_rate_text = (
+            "Ставка не указана по одному или нескольким рейсам. "
+            "Считаю выручку по ним как 0 руб., поэтому расчетная прибыль будет со знаком минус."
+        )
+    result_text = format_result(result)
+    saved_response_text = f"{missing_rate_text}\n\n{result_text}" if missing_rate_text else result_text
+
     if sheets_is_configured():
         try:
-            append_result(session.round_trip, result)
+            append_result(session.round_trip, result, response_text=saved_response_text)
         except Exception:
             sheets_error = "ошибка записи результата в Google Sheets"
         await _safe_write_request_log(
@@ -197,13 +206,10 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
             sheets_error or "",
         )
 
-    if _has_missing_rate(session):
-        await update.effective_message.reply_text(
-            "Ставка не указана по одному или нескольким рейсам. "
-            "Считаю выручку по ним как 0 руб., поэтому расчетная прибыль будет со знаком минус."
-        )
+    if missing_rate_text:
+        await update.effective_message.reply_text(missing_rate_text)
     await update.effective_message.reply_text(
-        escape(format_result(result)),
+        escape(result_text),
         parse_mode=ParseMode.HTML,
     )
     if sheets_error:

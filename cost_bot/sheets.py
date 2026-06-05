@@ -40,12 +40,17 @@ HEADERS = [
     "total_revenue_rub",
     "total_cost_rub",
     "total_profit_rub",
+    "Текст Ответа",
 ]
 
 REQUESTS_WORKSHEET_NAME = "Запросы"
 
 
-def append_result(round_trip: RoundTrip, result: RoundTripCost) -> None:
+def append_result(
+    round_trip: RoundTrip,
+    result: RoundTripCost,
+    response_text: str | None = None,
+) -> None:
     settings = get_settings()
     if not settings.google_sheets_spreadsheet_id:
         raise RuntimeError("GOOGLE_SHEETS_SPREADSHEET_ID is not configured.")
@@ -53,13 +58,25 @@ def append_result(round_trip: RoundTrip, result: RoundTripCost) -> None:
     service = _build_sheets_service()
     worksheet = settings.google_sheets_worksheet_name
     _ensure_worksheet(service, settings.google_sheets_spreadsheet_id, worksheet)
-    _ensure_headers(service, settings.google_sheets_spreadsheet_id, worksheet)
+    headers = _ensure_result_headers(service, settings.google_sheets_spreadsheet_id, worksheet)
 
     round_trip_id = _make_round_trip_id()
-    rows = [
-        _flight_cost_row(round_trip_id, index, item, result)
-        for index, item in enumerate(result.flights, 1)
-    ]
+    rows = []
+    direction_numbers: dict[str, int] = {}
+    for index, item in enumerate(result.flights, 1):
+        direction = item.flight.direction.value
+        direction_numbers[direction] = direction_numbers.get(direction, 0) + 1
+        rows.append(
+            _flight_cost_row(
+                round_trip_id,
+                index,
+                item,
+                result,
+                headers,
+                response_text,
+                direction_numbers[direction],
+            )
+        )
     service.spreadsheets().values().append(
         spreadsheetId=settings.google_sheets_spreadsheet_id,
         range=_range(worksheet, "A1"),
@@ -255,7 +272,7 @@ def _fill_request_flight(headers: list[str], row: list, prefix: str, flight: Fli
     _set_by_tokens(headers, row, prefix, ["пробег", "выгруз"], flight.distance_to_unloading_km)
     _set_by_tokens(headers, row, prefix, ["пробег", "рф"], flight.russian_territory_km)
     _set_by_tokens(headers, row, prefix, ["вес"], flight.cargo_weight_kg)
-    _set_by_tokens(headers, row, prefix, ["загрузка"], flight.loading_type.value)
+    _set_loading_type(headers, row, prefix, flight.loading_type.value)
 
 
 def _set_exact(headers: list[str], row: list, header: str, value) -> None:
@@ -271,6 +288,32 @@ def _set_by_tokens(headers: list[str], row: list, prefix: str, tokens: list[str]
     for index, header in enumerate(headers):
         normalized = _normalize_header(header)
         if all(token in normalized for token in prefix_tokens) and all(token in normalized for token in tokens):
+            row[index] = _cell_value(value)
+            return
+
+
+def _set_generic_by_tokens(headers: list[str], row: list, tokens: list[str], value) -> None:
+    for index, header in enumerate(headers):
+        normalized = _normalize_header(header)
+        if any(prefix in normalized for prefix in ("прям", "обратн")):
+            continue
+        if all(token in normalized for token in tokens):
+            row[index] = _cell_value(value)
+            return
+
+
+def _set_loading_type(headers: list[str], row: list, prefix: str, value) -> None:
+    prefix_tokens = _normalize_header(prefix).split()
+    for index, header in enumerate(headers):
+        normalized = _normalize_header(header)
+        if prefix_tokens and not all(token in normalized for token in prefix_tokens):
+            continue
+        if not prefix_tokens and any(prefix in normalized for prefix in ("прям", "обратн")):
+            continue
+        if "loading_type" in normalized or (
+            "загруз" in normalized
+            and not any(blocked in normalized for blocked in ("адрес", "пробег", "мест"))
+        ):
             row[index] = _cell_value(value)
             return
 
@@ -437,9 +480,44 @@ def _ensure_headers(service, spreadsheet_id: str, worksheet: str) -> None:
     ).execute()
 
 
-def _flight_cost_row(round_trip_id: str, index: int, item, result: RoundTripCost) -> list:
+def _ensure_result_headers(service, spreadsheet_id: str, worksheet: str) -> list[str]:
+    response = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=_range(worksheet, "1:1"),
+    ).execute()
+    values = response.get("values", [])
+    if not values:
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=_range(worksheet, f"A1:{_column_name(len(HEADERS))}1"),
+            valueInputOption="USER_ENTERED",
+            body={"values": [HEADERS]},
+        ).execute()
+        return HEADERS.copy()
+
+    headers = values[0]
+    if "Текст Ответа" not in headers:
+        headers = [*headers, "Текст Ответа"]
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=_range(worksheet, f"A1:{_column_name(len(headers))}1"),
+            valueInputOption="USER_ENTERED",
+            body={"values": [headers]},
+        ).execute()
+    return headers
+
+
+def _flight_cost_row(
+    round_trip_id: str,
+    index: int,
+    item,
+    result: RoundTripCost,
+    headers: list[str] | None = None,
+    response_text: str | None = None,
+    direction_index: int | None = None,
+) -> list:
     flight = item.flight
-    return [
+    default_row = [
         round_trip_id,
         index,
         flight.direction.value,
@@ -467,7 +545,51 @@ def _flight_cost_row(round_trip_id: str, index: int, item, result: RoundTripCost
         result.total_revenue_rub,
         result.total_cost_rub,
         result.total_profit_rub,
+        response_text if index == 1 else "",
     ]
+    if not headers:
+        return default_row
+
+    row = [""] * len(headers)
+    english_values = dict(zip(HEADERS, default_row, strict=False))
+    for header, value in english_values.items():
+        _set_exact(headers, row, header, value)
+
+    direction_label = "Прямой" if flight.direction.value == "direct" else "Обратный"
+    request_prefix = f"{direction_label} {direction_index or index}"
+    _fill_request_flight(headers, row, request_prefix, flight)
+    _set_generic_by_tokens(headers, row, ["id", "рейс"], round_trip_id)
+    _set_generic_by_tokens(headers, row, ["номер", "рейс"], index)
+    _set_generic_by_tokens(headers, row, ["направ"], flight.direction.value)
+    _set_generic_by_tokens(headers, row, ["клиент"], flight.client_short or "")
+    _set_generic_by_tokens(headers, row, ["адрес", "загруз"], flight.loading_address or "")
+    _set_generic_by_tokens(headers, row, ["пробег", "загруз"], flight.distance_to_loading_km or 0)
+    _set_generic_by_tokens(headers, row, ["адрес", "выгруз"], flight.unloading_address or "")
+    _set_generic_by_tokens(headers, row, ["ставк"], flight.rate_with_vat_rub or 0)
+    _set_generic_by_tokens(headers, row, ["статус"], flight.status.value if flight.status else "")
+    _set_generic_by_tokens(headers, row, ["стран"], flight.country or "")
+    _set_generic_by_tokens(headers, row, ["ндс"], flight.vat_percent if flight.vat_percent is not None else "")
+    _set_generic_by_tokens(headers, row, ["пробег", "выгруз"], flight.distance_to_unloading_km or 0)
+    _set_generic_by_tokens(headers, row, ["пробег", "рф"], flight.russian_territory_km)
+    _set_generic_by_tokens(headers, row, ["вес"], flight.cargo_weight_kg)
+    _set_loading_type(headers, row, "", flight.loading_type.value)
+    _set_generic_by_tokens(headers, row, ["выруч"], item.revenue_rub)
+    _set_generic_by_tokens(headers, row, ["топлив"], item.fuel_rub)
+    _set_generic_by_tokens(headers, row, ["обслуж"], item.maintenance_rub)
+    _set_generic_by_tokens(headers, row, ["водител"], item.driver_and_fixed_rub)
+    _set_generic_by_tokens(headers, row, ["платн"], item.tolls_rub)
+    _set_generic_by_tokens(headers, row, ["международ"], item.international_extra_rub)
+    _set_generic_by_tokens(headers, row, ["себестоим"], item.total_cost_rub)
+    _set_generic_by_tokens(headers, row, ["прибыл"], item.profit_rub)
+    _set_generic_by_tokens(headers, row, ["общ", "выруч"], result.total_revenue_rub)
+    _set_generic_by_tokens(headers, row, ["общ", "себестоим"], result.total_cost_rub)
+    _set_generic_by_tokens(headers, row, ["общ", "прибыл"], result.total_profit_rub)
+    _set_exact(headers, row, "Текст Ответа", response_text if index == 1 else "")
+    _set_generic_by_tokens(headers, row, ["текст", "ответ"], response_text if index == 1 else "")
+
+    if not any(token in _normalize_header(" ".join(headers)) for token in ("направ", "direction")):
+        _set_generic_by_tokens(headers, row, ["рейс"], f"{direction_label} {index}")
+    return row
 
 
 def _range(worksheet: str, cell_range: str) -> str:
