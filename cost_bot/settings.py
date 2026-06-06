@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import tempfile
@@ -22,6 +23,7 @@ class Settings:
     google_sheets_worksheet_name: str
     google_application_credentials: str | None
     google_application_credentials_json: str | None
+    google_application_credentials_base64: str | None
     google_drive_images_folder_id: str | None
 
 
@@ -39,6 +41,7 @@ def get_settings() -> Settings:
         google_sheets_worksheet_name=os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "Расчеты"),
         google_application_credentials=_optional_env("GOOGLE_APPLICATION_CREDENTIALS"),
         google_application_credentials_json=_optional_env("GOOGLE_APPLICATION_CREDENTIALS_JSON"),
+        google_application_credentials_base64=_optional_env("GOOGLE_APPLICATION_CREDENTIALS_BASE64"),
         google_drive_images_folder_id=_normalize_drive_folder_id(
             _optional_env("GOOGLE_DRIVE_IMAGES_FOLDER_ID")
         ),
@@ -92,6 +95,8 @@ def require_existing_file(path: str | None, label: str) -> Path:
 
 def resolve_google_credentials_file() -> Path:
     settings = get_settings()
+    if settings.google_application_credentials_base64:
+        return _write_temp_credentials_base64(settings.google_application_credentials_base64)
     if settings.google_application_credentials_json:
         return _write_temp_credentials(settings.google_application_credentials_json)
     if settings.google_application_credentials and settings.google_application_credentials.strip().startswith("{"):
@@ -111,3 +116,14 @@ def _write_temp_credentials(credentials_json: str) -> Path:
     credentials_file = temp_dir / "google-service-account.json"
     credentials_file.write_text(credentials_json, encoding="utf-8")
     return credentials_file
+
+
+def _write_temp_credentials_base64(credentials_base64: str) -> Path:
+    cleaned = "".join(credentials_base64.split())
+    try:
+        credentials_json = base64.b64decode(cleaned).decode("utf-8")
+    except Exception as exc:
+        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS_BASE64 must contain base64 encoded JSON.") from exc
+    if not credentials_json.strip().startswith("{"):
+        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS_BASE64 must decode to raw JSON.")
+    return _write_temp_credentials(credentials_json)
