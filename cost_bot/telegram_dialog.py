@@ -495,7 +495,7 @@ class TelegramDialogSession:
     def _render_prompt(self, prompt: Prompt | None) -> str:
         if prompt is None:
             return ""
-        prefix = self._current_flight_label()
+        prefix = "" if prompt.field in {"another_forward", "has_backhaul", "another_backhaul"} else self._current_flight_label()
         label = prompt.label
         if prompt.field == "rate_with_vat_rub":
             foreign_amount = self._foreign_rate_amount()
@@ -504,7 +504,7 @@ class TelegramDialogSession:
                     f"Ставка указана как {amount(foreign_amount)} {self._foreign_rate_currency()}. "
                     "Укажите курс к рублю для пересчета или сразу ставку в рублях"
                 )
-        parts = [f"{prefix}: {label}"]
+        parts = [f"{prefix}: {label}" if prefix else label]
         if prompt.default is not None:
             default = prompt.default.value if hasattr(prompt.default, "value") else prompt.default
             if isinstance(prompt.default, bool):
