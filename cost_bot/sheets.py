@@ -319,6 +319,7 @@ def is_configured() -> bool:
         and (
             settings.google_application_credentials
             or settings.google_application_credentials_json
+            or settings.google_application_credentials_base64
         )
     )
 
