@@ -55,6 +55,7 @@ class TelegramDialogSession:
     foreign_rate_amounts: dict[tuple[Direction, int], float] = field(default_factory=dict)
     foreign_rate_currencies: dict[tuple[Direction, int], str] = field(default_factory=dict)
     dialog_history: list[str] = field(default_factory=list)
+    backhaul_confirmed: bool = False
 
     def __post_init__(self) -> None:
         self.round_trip.forward_flights = self.round_trip.forward_flights[:MAX_FORWARD_FLIGHTS]
@@ -235,6 +236,19 @@ class TelegramDialogSession:
 
     def _move_to_backhaul_or_finish(self) -> list[str]:
         if self.round_trip.backhaul_flights:
+            if not self.backhaul_confirmed and self._backhaul_needs_confirmation():
+                self.stage = "has_backhaul"
+                self.current_prompt = Prompt(
+                    field="has_backhaul",
+                    label=(
+                        "Есть обратная загрузка? Если нет, посчитаю пустой возврат "
+                        "с таким же пробегом обратно"
+                    ),
+                    parser=parse_yes_no,
+                    default=False,
+                    choices=["да", "нет"],
+                )
+                return [self._render_prompt(self.current_prompt)]
             self.current_direction = Direction.BACKHAUL
             self.current_index = 0
             self.stage = "collect"
@@ -243,7 +257,7 @@ class TelegramDialogSession:
         self.stage = "has_backhaul"
         self.current_prompt = Prompt(
             field="has_backhaul",
-            label="Есть обратная загрузка?",
+            label="Есть обратная загрузка? Если нет, посчитаю пустой возврат с таким же пробегом обратно",
             parser=parse_yes_no,
             default=False,
             choices=["да", "нет"],
@@ -262,12 +276,19 @@ class TelegramDialogSession:
 
         if self.stage == "has_backhaul":
             if answer:
-                self.round_trip.backhaul_flights.append(Flight(direction=Direction.BACKHAUL))
+                self.backhaul_confirmed = True
+                if not self.round_trip.backhaul_flights:
+                    self.round_trip.backhaul_flights.append(Flight(direction=Direction.BACKHAUL))
                 self.current_direction = Direction.BACKHAUL
                 self.current_index = 0
                 self.stage = "collect"
                 self.current_prompt = None
-                return ["Добавил обратный рейс 1.", *self._advance()]
+                return ["Перехожу к обратной загрузке.", *self._advance()]
+            self.round_trip.backhaul_flights = [self._make_empty_return_flight()]
+            return [
+                "Обратной загрузки нет. Добавил пустой возврат с таким же пробегом обратно.",
+                *self._finish(),
+            ]
             return self._finish()
 
         if self.stage == "another_backhaul":
@@ -286,6 +307,41 @@ class TelegramDialogSession:
         self.current_prompt = None
         self.stage = "ready"
         return ["Данные собраны. Считаю себестоимость и прибыль."]
+
+    def _backhaul_needs_confirmation(self) -> bool:
+        if not self.round_trip.backhaul_flights:
+            return False
+        return not any(
+            (flight.rate_with_vat_rub or 0) > 0 or bool(flight.client_short)
+            for flight in self.round_trip.backhaul_flights
+        )
+
+    def _make_empty_return_flight(self) -> Flight:
+        last_forward = self.round_trip.forward_flights[-1]
+        first_forward = self.round_trip.forward_flights[0]
+        return_distance = sum(flight.distance_to_unloading_km or 0 for flight in self.round_trip.forward_flights)
+        russian_territory_km = None
+        if last_forward.status == TransportStatus.INTERNATIONAL:
+            russian_territory_km = sum(
+                flight.russian_territory_km or 0
+                for flight in self.round_trip.forward_flights
+                if flight.status == TransportStatus.INTERNATIONAL
+            )
+        return Flight(
+            direction=Direction.BACKHAUL,
+            client_short="Пустой возврат",
+            loading_address=last_forward.unloading_address,
+            distance_to_loading_km=0.0,
+            unloading_address=first_forward.loading_address,
+            rate_with_vat_rub=0.0,
+            status=last_forward.status,
+            country=last_forward.country,
+            vat_percent=last_forward.vat_percent if last_forward.vat_percent is not None else 22,
+            distance_to_unloading_km=return_distance,
+            russian_territory_km=russian_territory_km,
+            cargo_weight_kg=DEFAULT_WEIGHT_KG,
+            loading_type=LoadingType.REAR,
+        )
 
     def _next_field_prompt(self) -> Prompt | None:
         flight = self._current_flight()
