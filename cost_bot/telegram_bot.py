@@ -3,6 +3,7 @@ from html import escape
 
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.request import HTTPXRequest
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .ai_parser import (
@@ -44,14 +45,32 @@ def run_telegram_bot() -> None:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured.")
 
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+    get_updates_request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=60.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+    application = (
+        Application.builder()
+        .token(settings.telegram_bot_token)
+        .request(request)
+        .get_updates_request(get_updates_request)
+        .build()
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
     application.add_handler(CommandHandler("new", new_request))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.run_polling()
+    application.run_polling(timeout=50)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
