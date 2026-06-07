@@ -55,6 +55,7 @@ Return only JSON. No markdown, explanations, or comments.
 
 Schema:
 {{
+  "recognized_text": string|null,
   "forward_flights": [flight],
   "backhaul_flights": [flight]
 }}
@@ -89,13 +90,15 @@ Rules:
 - "20 tons" or "20 \u0442\u043e\u043d\u043d" means 20000 kg.
 - Do not invent mileage, rate, VAT, or weight.
 - If only one flight is mentioned, put it into forward_flights.
+- If the input is an image, set recognized_text to the full text read from the image.
 """
 
 
 IMAGE_SYSTEM_INSTRUCTION = SYSTEM_INSTRUCTION + """
 
-The user may send an image/screenshot of a chat message. First read the text from
-the image, then extract the same JSON fields from that text.
+The user may send an image/screenshot of a chat message. First OCR the full visible
+text exactly into recognized_text, preserving routes, numbers, currency words, VAT,
+and line breaks as much as possible. Then extract the same JSON fields from that text.
 """
 
 
@@ -154,9 +157,17 @@ def parse_data_with_ai_if_configured(text: str) -> dict[str, Any]:
 
 
 def parse_image_with_ai_if_configured(image_bytes: bytes, mime_type: str = "image/jpeg") -> RoundTrip:
+    round_trip, _recognized_text = parse_image_request_with_ai_if_configured(image_bytes, mime_type)
+    return round_trip
+
+
+def parse_image_request_with_ai_if_configured(
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+) -> tuple[RoundTrip, str]:
     settings = get_settings()
     if not settings.openai_api_key:
-        return RoundTrip()
+        return RoundTrip(), ""
 
     client = _build_client()
     image_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
@@ -168,15 +179,22 @@ def parse_image_with_ai_if_configured(image_bytes: bytes, mime_type: str = "imag
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Extract freight request JSON from this image."},
+                    {
+                        "type": "text",
+                        "text": (
+                            "Read the full visible Russian freight request text from this image, "
+                            "put it into recognized_text, then extract the freight request JSON."
+                        ),
+                    },
                     {"type": "image_url", "image_url": {"url": image_url}},
                 ],
             },
         ],
     )
     data = json.loads(_extract_json_object(response_text))
-    data = _postprocess_data(data, "")
-    return round_trip_from_dict(data)
+    recognized_text = _recognized_text_from_data(data)
+    data = _postprocess_data(data, recognized_text)
+    return round_trip_from_dict(data), recognized_text
 
 
 def answer_dialog_with_ai_if_configured(user_text: str, calculation_context: str) -> str | None:
@@ -306,6 +324,11 @@ def _postprocess_data(data: dict[str, Any], source_text: str) -> dict[str, Any]:
         flight["cargo_weight_kg"] = _clean_weight(flight.get("cargo_weight_kg"), flight_text)
 
     return data
+
+
+def _recognized_text_from_data(data: dict[str, Any]) -> str:
+    value = data.get("recognized_text")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _extract_directional_segments(text: str) -> dict[str, str]:

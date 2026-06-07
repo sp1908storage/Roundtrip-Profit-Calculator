@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from .ai_parser import (
     answer_dialog_with_ai_if_configured,
     parse_data_with_ai_if_configured,
-    parse_image_with_ai_if_configured,
+    parse_image_request_with_ai_if_configured,
     parse_with_ai_if_configured,
 )
 from .calculator import calculate_round_trip
@@ -179,7 +179,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         photo = update.effective_message.photo[-1]
         telegram_file = await photo.get_file()
         image_bytes = bytes(await telegram_file.download_as_bytearray())
-        round_trip = parse_image_with_ai_if_configured(image_bytes, mime_type="image/jpeg")
+        round_trip, recognized_text = parse_image_request_with_ai_if_configured(
+            image_bytes,
+            mime_type="image/jpeg",
+        )
     except Exception:
         await _reply_text(
             update,
@@ -187,9 +190,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
+    caption = update.effective_message.caption or ""
+    source_text = _combine_image_source_text(recognized_text, caption)
     session = TelegramDialogSession(
         round_trip=round_trip,
-        source_text=update.effective_message.caption or "",
+        source_text=source_text,
         message_type="photo",
         image_file_id=photo.file_id,
     )
@@ -507,6 +512,15 @@ def _looks_like_new_freight_request(normalized: str) -> bool:
 
 def _normalize_text(text: str) -> str:
     return text.strip().lower().replace("ё", "е")
+
+
+def _combine_image_source_text(recognized_text: str, caption: str) -> str:
+    parts = []
+    if recognized_text.strip():
+        parts.append(recognized_text.strip())
+    if caption.strip() and caption.strip() not in parts:
+        parts.append(caption.strip())
+    return "\n\n".join(parts)
 
 
 async def _write_request_log(
