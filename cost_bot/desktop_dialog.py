@@ -160,7 +160,10 @@ class DesktopDialogSession:
 
         for prompt in prompts:
             value = getattr(flight, prompt.field)
-            if self._field_key(prompt.field) not in self.answered_fields:
+            field_key = self._field_key(prompt.field)
+            if field_key in self.answered_fields and prompt.optional:
+                continue
+            if field_key not in self.answered_fields:
                 return prompt
             if value in (None, ""):
                 return prompt
@@ -252,7 +255,7 @@ class DesktopDialogSession:
             self.stage = "has_backhaul"
             self.current_prompt = Prompt(
                 field="has_backhaul",
-                label="Есть рейс в обратном направлении?",
+                label="Есть рейс в обратном направлении? Если нет, посчитаю пустой возврат с таким же пробегом обратно",
                 parser=lambda text: parse_yes_no(text, default=False),
                 default=False,
                 choices=["да", "нет"],
@@ -269,7 +272,11 @@ class DesktopDialogSession:
                 self.current_prompt = self._next_field_prompt()
                 self._safe_log_request("диалог идет")
                 return ["Добавлен обратный рейс.", self._render_prompt(self.current_prompt)]
-            return self._complete_and_calculate()
+            self.round_trip.backhaul_flights = [self._make_empty_return_flight()]
+            return [
+                "Обратной загрузки нет. Добавлен пустой возврат с таким же пробегом обратно.",
+                *self._complete_and_calculate(),
+            ]
 
         if self.stage == "another_backhaul":
             if value:
@@ -282,6 +289,33 @@ class DesktopDialogSession:
             return self._complete_and_calculate()
 
         return ["Сейчас этот ответ не ожидается."]
+
+    def _make_empty_return_flight(self) -> Flight:
+        last_forward = self.round_trip.forward_flights[-1]
+        first_forward = self.round_trip.forward_flights[0]
+        return_distance = sum(flight.distance_to_unloading_km or 0 for flight in self.round_trip.forward_flights)
+        russian_territory_km = None
+        if last_forward.status == TransportStatus.INTERNATIONAL:
+            russian_territory_km = sum(
+                flight.russian_territory_km or 0
+                for flight in self.round_trip.forward_flights
+                if flight.status == TransportStatus.INTERNATIONAL
+            )
+        return Flight(
+            direction=Direction.BACKHAUL,
+            client_short="Пустой возврат",
+            loading_address=last_forward.unloading_address,
+            distance_to_loading_km=0.0,
+            unloading_address=first_forward.loading_address,
+            rate_with_vat_rub=0.0,
+            status=last_forward.status,
+            country=last_forward.country,
+            vat_percent=last_forward.vat_percent if last_forward.vat_percent is not None else 22,
+            distance_to_unloading_km=return_distance,
+            russian_territory_km=russian_territory_km,
+            cargo_weight_kg=DEFAULT_WEIGHT_KG,
+            loading_type=LoadingType.REAR,
+        )
 
     def _safe_log_request(self, calculation_status: str, error_comment: str = "") -> None:
         if not sheets_is_configured():

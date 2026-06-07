@@ -1,8 +1,11 @@
+import asyncio
+import logging
 import re
 from html import escape
 
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, TimedOut
 from telegram.request import HTTPXRequest
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -24,6 +27,9 @@ from .sheets import (
 )
 from .telegram_dialog import TelegramDialogSession
 
+
+LOGGER = logging.getLogger(__name__)
+SEND_RETRY_DELAYS_SECONDS = (1.0, 3.0, 6.0)
 
 START_TEXT = (
     "Пришлите описание прямого рейса или круго-рейса одним сообщением. "
@@ -47,15 +53,17 @@ def run_telegram_bot() -> None:
 
     request = HTTPXRequest(
         connect_timeout=30.0,
-        read_timeout=30.0,
-        write_timeout=30.0,
+        read_timeout=60.0,
+        write_timeout=60.0,
         pool_timeout=30.0,
+        media_write_timeout=60.0,
     )
     get_updates_request = HTTPXRequest(
         connect_timeout=30.0,
-        read_timeout=60.0,
-        write_timeout=30.0,
+        read_timeout=90.0,
+        write_timeout=60.0,
         pool_timeout=30.0,
+        media_write_timeout=60.0,
     )
     application = (
         Application.builder()
@@ -77,7 +85,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if not await _is_allowed(update):
         return
-    await update.effective_message.reply_text(
+    await _reply_text(
+        update,
         START_TEXT + "\n\n/new - начать новый расчет\n/cancel - отменить текущий расчет"
     )
 
@@ -87,7 +96,7 @@ async def new_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not await _is_allowed(update):
         return
     _drop_session(update)
-    await update.effective_message.reply_text("Готов к новой заявке. Пришлите текст или скриншот.")
+    await _reply_text(update, "Готов к новой заявке. Пришлите текст или скриншот.")
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -95,7 +104,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _is_allowed(update):
         return
     _drop_session(update)
-    await update.effective_message.reply_text("Текущий расчет отменен. Можно прислать новую заявку.")
+    await _reply_text(update, "Текущий расчет отменен. Можно прислать новую заявку.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -113,11 +122,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if chat_id in LAST_RESULTS and _looks_like_result_followup(text):
-        await update.effective_message.reply_text(_answer_result_followup(text, LAST_RESULTS[chat_id]))
+        await _reply_text(update, _answer_result_followup(text, LAST_RESULTS[chat_id]))
         return
 
     if _looks_like_orphaned_dialog_answer(text):
-        await update.effective_message.reply_text(
+        await _reply_text(
+            update,
             "Похоже, предыдущий диалог был прерван, например из-за перезапуска бота. "
             "Я не буду начинать новый расчет по одному ответу, чтобы не гонять вас по второму кругу. "
             "Пришлите исходную заявку заново одним сообщением или отправьте /new."
@@ -129,7 +139,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception:
         round_trip = None
     if round_trip is None:
-        await update.effective_message.reply_text(
+        await _reply_text(
+            update,
             "AI-разбор временно недоступен. Не страшно, соберу данные по шагам."
         )
         round_trip = RoundTrip()
@@ -158,7 +169,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         image_bytes = bytes(await telegram_file.download_as_bytearray())
         round_trip = parse_image_with_ai_if_configured(image_bytes, mime_type="image/jpeg")
     except Exception:
-        await update.effective_message.reply_text(
+        await _reply_text(
+            update,
             "Не удалось обработать изображение через ИИ. Проверьте настройки модели и пришлите текст заявки, если нужно продолжить без скриншота."
         )
         return
@@ -198,7 +210,7 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
     try:
         result = calculate_round_trip(session.round_trip)
     except ValueError as exc:
-        await update.effective_message.reply_text(f"Не удалось рассчитать: {exc}")
+        await _reply_text(update, f"Не удалось рассчитать: {exc}")
         await _safe_write_request_log(update, session, "ошибка", str(exc))
         _drop_session(update)
         return
@@ -233,13 +245,14 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
         )
 
     if missing_rate_text:
-        await update.effective_message.reply_text(missing_rate_text)
-    await update.effective_message.reply_text(
+        await _reply_text(update, missing_rate_text)
+    await _reply_text(
+        update,
         escape(result_text),
         parse_mode=ParseMode.HTML,
     )
     if sheets_error:
-        await update.effective_message.reply_text(f"Расчет готов, но {SHEETS_PUBLIC_ERROR}")
+        await _reply_text(update, f"Расчет готов, но {SHEETS_PUBLIC_ERROR}")
     chat_id = _chat_id(update)
     if chat_id is not None:
         LAST_RESULTS[chat_id] = (session, result)
@@ -249,7 +262,36 @@ async def _finish_if_ready(update: Update, session: TelegramDialogSession) -> No
 async def _send_messages(update: Update, messages: list[str]) -> None:
     for message in messages:
         if message:
-            await update.effective_message.reply_text(message)
+            await _reply_text(update, message)
+
+
+async def _reply_text(update: Update, text: str, **kwargs) -> bool:
+    message = update.effective_message
+    if message is None:
+        return False
+
+    attempts = len(SEND_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            await message.reply_text(text, **kwargs)
+            return True
+        except (TimedOut, NetworkError) as exc:
+            if attempt + 1 >= attempts:
+                LOGGER.warning(
+                    "Telegram send failed after %s attempts: %s",
+                    attempts,
+                    exc.__class__.__name__,
+                )
+                return False
+            delay = SEND_RETRY_DELAYS_SECONDS[attempt]
+            LOGGER.warning(
+                "Telegram send timed out, retrying in %.1fs (%s/%s)",
+                delay,
+                attempt + 1,
+                attempts,
+            )
+            await asyncio.sleep(delay)
+    return False
 
 
 def _chat_id(update: Update) -> int | None:
@@ -445,7 +487,7 @@ async def _safe_write_request_log(
     try:
         await _write_request_log(update, session, calculation_status, error_comment)
     except Exception:
-        await update.effective_message.reply_text(SHEETS_PUBLIC_ERROR)
+        await _reply_text(update, SHEETS_PUBLIC_ERROR)
 
 
 def _safe_error_summary(exc: Exception) -> str:
@@ -485,5 +527,5 @@ async def _is_allowed(update: Update) -> bool:
     if not settings.telegram_allowed_chat_ids or chat_id in settings.telegram_allowed_chat_ids:
         return True
     if update.effective_message:
-        await update.effective_message.reply_text("Доступ к боту не разрешен для этого чата.")
+        await _reply_text(update, "Доступ к боту не разрешен для этого чата.")
     return False
