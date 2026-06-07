@@ -305,6 +305,7 @@ def _postprocess_data(data: dict[str, Any], source_text: str) -> dict[str, Any]:
             flight["unloading_address"] = global_route[1]
         if global_country:
             flight["country"] = global_country
+        _clean_flight_addresses(flight)
 
         country = flight.get("country")
         forced_status = None
@@ -324,6 +325,15 @@ def _postprocess_data(data: dict[str, Any], source_text: str) -> dict[str, Any]:
         flight["cargo_weight_kg"] = _clean_weight(flight.get("cargo_weight_kg"), flight_text)
 
     return data
+
+
+def _clean_flight_addresses(flight: dict[str, Any]) -> None:
+    for field_name in ("loading_address", "unloading_address"):
+        value = flight.get(field_name)
+        if isinstance(value, str):
+            cleaned = _clean_route_endpoint(value)
+            if cleaned:
+                flight[field_name] = cleaned
 
 
 def _recognized_text_from_data(data: dict[str, Any]) -> str:
