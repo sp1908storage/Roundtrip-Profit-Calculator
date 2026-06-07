@@ -10,6 +10,7 @@ from telegram.request import HTTPXRequest
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .ai_parser import (
+    answer_dialog_with_ai_if_configured,
     parse_data_with_ai_if_configured,
     parse_image_with_ai_if_configured,
     parse_with_ai_if_configured,
@@ -121,8 +122,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _continue_session(update, SESSIONS[chat_id], text)
         return
 
+    normalized = _normalize_text(text)
+    if chat_id in LAST_RESULTS and not _looks_like_new_freight_request(normalized):
+        ai_answer = _answer_result_dialog_with_ai(text, LAST_RESULTS[chat_id])
+        if ai_answer:
+            await _reply_text(update, ai_answer)
+            return
+
     if chat_id in LAST_RESULTS and _looks_like_result_followup(text):
         await _reply_text(update, _answer_result_followup(text, LAST_RESULTS[chat_id]))
+        return
+
+    if _looks_like_casual_close(text):
+        await _reply_text(update, _answer_casual_close(chat_id in LAST_RESULTS))
         return
 
     if _looks_like_orphaned_dialog_answer(text):
@@ -309,7 +321,7 @@ def _has_missing_rate(session: TelegramDialogSession) -> bool:
 
 
 def _looks_like_result_followup(text: str) -> bool:
-    normalized = text.strip().lower().replace("ё", "е")
+    normalized = _normalize_text(text)
     if "?" in normalized:
         return True
     return any(
@@ -363,6 +375,62 @@ def _answer_result_followup(text: str, last_result: tuple[TelegramDialogSession,
     return "\n".join(lines)
 
 
+def _answer_result_dialog_with_ai(
+    text: str,
+    last_result: tuple[TelegramDialogSession, object],
+) -> str | None:
+    try:
+        return answer_dialog_with_ai_if_configured(text, _result_dialog_context(last_result))
+    except Exception as exc:
+        LOGGER.warning("AI dialog answer failed: %s", exc.__class__.__name__)
+        return None
+
+
+def _result_dialog_context(last_result: tuple[TelegramDialogSession, object]) -> str:
+    session, result = last_result
+    parts = []
+    if session.source_text:
+        parts.append(f"Исходная заявка:\n{session.source_text}")
+    if session.dialog_history:
+        parts.append("Уточнения в диалоге:\n" + "\n\n".join(session.dialog_history[-8:]))
+    parts.append("Последний расчет:\n" + format_result(result))
+    return "\n\n".join(parts)
+
+
+def _looks_like_casual_close(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    casual_tokens = (
+        "спасибо",
+        "благодарю",
+        "супер",
+        "отлично",
+        "класс",
+        "здорово",
+        "хорошо",
+        "понял",
+        "поняла",
+        "понятно",
+        "ясно",
+        "принял",
+        "приняла",
+        "принято",
+        "ок",
+        "окей",
+        "спс",
+    )
+    if not any(token in normalized for token in casual_tokens):
+        return False
+    return not _looks_like_new_freight_request(normalized) and not _looks_like_result_followup(text)
+
+
+def _answer_casual_close(has_last_result: bool) -> str:
+    if has_last_result:
+        return "Пожалуйста. Если понадобится еще расчет, пришлите новую заявку одним сообщением."
+    return "Пожалуйста. Когда будет заявка, присылайте ее одним сообщением."
+
+
 def _try_update_session_from_ai(session: TelegramDialogSession) -> bool:
     context = session.ai_context()
     if not context:
@@ -375,7 +443,7 @@ def _try_update_session_from_ai(session: TelegramDialogSession) -> bool:
 
 
 def _looks_like_orphaned_dialog_answer(text: str) -> bool:
-    normalized = text.strip().lower().replace("ё", "е")
+    normalized = _normalize_text(text)
     if not normalized:
         return True
     if normalized in {
@@ -422,6 +490,10 @@ def _looks_like_new_freight_request(normalized: str) -> bool:
     has_rate = bool(re.search(r"\d[\d\s]*(?:руб|₽|usd|eur|cny|юан|евро|долл)", normalized))
     has_route_hint = len(re.findall(r"[a-zа-я]{3,}", normalized)) >= 2
     return has_rate and has_route_hint
+
+
+def _normalize_text(text: str) -> str:
+    return text.strip().lower().replace("ё", "е")
 
 
 async def _write_request_log(

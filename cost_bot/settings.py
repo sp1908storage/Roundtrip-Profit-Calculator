@@ -17,6 +17,9 @@ class Settings:
     openai_base_url: str | None
     openai_model: str
     openai_vision_model: str | None
+    openai_dialog_model: str
+    openai_dialog_temperature: float
+    openai_dialog_context_chars: int
     telegram_bot_token: str | None
     telegram_allowed_chat_ids: set[int]
     google_sheets_spreadsheet_id: str | None
@@ -33,6 +36,9 @@ def get_settings() -> Settings:
         openai_base_url=_optional_env("OPENAI_BASE_URL"),
         openai_model=os.getenv("OPENAI_MODEL", "deepseek-v4-pro"),
         openai_vision_model=_optional_env("OPENAI_VISION_MODEL"),
+        openai_dialog_model=os.getenv("OPENAI_DIALOG_MODEL") or os.getenv("OPENAI_MODEL", "deepseek-v4-pro"),
+        openai_dialog_temperature=_float_env("OPENAI_DIALOG_TEMPERATURE", 0.4),
+        openai_dialog_context_chars=_int_env("OPENAI_DIALOG_CONTEXT_CHARS", 6000),
         telegram_bot_token=_optional_env("TELEGRAM_BOT_TOKEN"),
         telegram_allowed_chat_ids=_parse_chat_ids(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
         google_sheets_spreadsheet_id=_normalize_spreadsheet_id(
@@ -53,6 +59,26 @@ def _optional_env(name: str) -> str | None:
     if not value:
         return None
     return value.strip().strip('"') or None
+
+
+def _float_env(name: str, default: float) -> float:
+    value = _optional_env(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _int_env(name: str, default: int) -> int:
+    value = _optional_env(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 def _parse_chat_ids(value: str) -> set[int]:
