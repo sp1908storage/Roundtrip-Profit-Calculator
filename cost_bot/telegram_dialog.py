@@ -18,6 +18,17 @@ MAX_BACKHAUL_FLIGHTS = 3
 YES_WORDS = {"да", "д", "yes", "y", "ок", "ok", "ага", "верно"}
 NO_WORDS = {"нет", "н", "no", "n", "не", "не надо"}
 SKIP_WORDS = {"", "-", "пропустить", "не знаю", "незнаю", "ок", "оставить", "по умолчанию"}
+DIRECT_PROMPT_FIELDS = {
+    "distance_to_loading_km",
+    "rate_with_vat_rub",
+    "status",
+    "country",
+    "vat_percent",
+    "distance_to_unloading_km",
+    "russian_territory_km",
+    "cargo_weight_kg",
+    "loading_type",
+}
 FOREIGN_CURRENCY_RE = re.compile(
     r"(\busd\b|\$|долл?|доллар|у\.?\s*е\.?|\beur\b|€|евро|\bcny\b|\brmb\b|¥|юан|юань|юаней|yuan)",
     re.IGNORECASE,
@@ -56,6 +67,7 @@ class TelegramDialogSession:
     foreign_rate_currencies: dict[tuple[Direction, int], str] = field(default_factory=dict)
     dialog_history: list[str] = field(default_factory=list)
     backhaul_confirmed: bool = False
+    pending_messages: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.round_trip.forward_flights = self.round_trip.forward_flights[:MAX_FORWARD_FLIGHTS]
@@ -119,7 +131,8 @@ class TelegramDialogSession:
         return "\n\n".join(parts)
 
     def apply_ai_data(self, data: dict[str, Any], source_text: str) -> bool:
-        changed = False
+        data = _copy_ai_data(data)
+        changed = self._apply_foreign_rate_corrections(data)
         changed |= self._merge_flight_list(
             self.round_trip.forward_flights,
             data.get("forward_flights", []),
@@ -137,31 +150,96 @@ class TelegramDialogSession:
             self.current_prompt = None
         return changed
 
+    def _apply_foreign_rate_corrections(self, data: dict[str, Any]) -> bool:
+        changed = False
+        for items in (data.get("forward_flights", []), data.get("backhaul_flights", [])):
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                currency = _rate_currency_from_data(item)
+                if not currency or currency == "RUB":
+                    continue
+                raw_amount = item.get("rate_original_amount") or item.get("rate_with_vat_rub")
+                rate_amount = _optional_rate_amount(raw_amount)
+                if rate_amount is None:
+                    continue
+                match = self._find_unique_flight_by_rate(rate_amount)
+                if match is None:
+                    continue
+                direction, index, flight = match
+                flight.rate_with_vat_rub = rate_amount
+                key = (direction, index)
+                self.foreign_rate_amounts[key] = rate_amount
+                self.foreign_rate_currencies[key] = currency
+                direction_label = "прямого" if direction == Direction.FORWARD else "обратного"
+                self.pending_messages.append(
+                    f"Понял: ставка {direction_label} рейса {index + 1} указана как {amount(rate_amount)} {currency}. "
+                    "Курс уточню, когда дойдем до этого рейса."
+                )
+                item["rate_original_amount"] = None
+                item["rate_with_vat_rub"] = None
+                item["rate_currency"] = None
+                changed = True
+        return changed
+
+    def _find_unique_flight_by_rate(self, rate_amount: float) -> tuple[Direction, int, Flight] | None:
+        matches: list[tuple[Direction, int, Flight]] = []
+        for direction, flights in (
+            (Direction.FORWARD, self.round_trip.forward_flights),
+            (Direction.BACKHAUL, self.round_trip.backhaul_flights),
+        ):
+            for index, flight in enumerate(flights):
+                current = flight.rate_with_vat_rub
+                if current not in (None, "") and abs(float(current) - rate_amount) < 0.01:
+                    matches.append((direction, index, flight))
+        return matches[0] if len(matches) == 1 else None
+
     def continue_after_ai_update(self) -> list[str]:
         if self.current_prompt and self._field_has_value(self.current_prompt.field):
             self.answered_fields.add(self._field_key(self.current_prompt.field))
             self.current_prompt = None
-        return self._advance()
+        return [*self._consume_pending_messages(), *self._advance()]
+
+    def _consume_pending_messages(self) -> list[str]:
+        messages = self.pending_messages
+        self.pending_messages = []
+        return messages
 
     def current_prompt_is_satisfied(self) -> bool:
         return bool(self.current_prompt and self._field_has_value(self.current_prompt.field))
+
+    def should_handle_current_answer_directly(self, text: str) -> bool:
+        if self.current_prompt is None or self.current_prompt.field not in DIRECT_PROMPT_FIELDS:
+            return False
+        normalized = normalize_answer(text)
+        if normalized in SKIP_WORDS and self.current_prompt.default is not None:
+            return True
+        if self.current_prompt.field == "rate_with_vat_rub" and contains_foreign_currency(text):
+            return True
+        try:
+            self.current_prompt.parser(text)
+        except ValueError:
+            return False
+        return True
 
     def initial_summary(self) -> str:
         parts = ["ОК, я начал разбор заявки."]
         if self.round_trip.forward_flights:
             parts.append("Прямое направление:")
             for index, flight in enumerate(self.round_trip.forward_flights, 1):
-                parts.append(f"- {self._flight_summary(flight, index)}")
+                parts.append(f"- {self._flight_summary(flight, index, Direction.FORWARD)}")
         if self.round_trip.backhaul_flights:
             parts.append("Обратное направление:")
             for index, flight in enumerate(self.round_trip.backhaul_flights, 1):
-                parts.append(f"- {self._flight_summary(flight, index)}")
+                parts.append(f"- {self._flight_summary(flight, index, Direction.BACKHAUL)}")
         else:
             parts.append("Обратной загрузки пока не вижу, уточню дальше.")
         parts.append("Дальше задам вопросы по одному.")
         return "\n".join(parts)
 
-    def _flight_summary(self, flight: Flight, index: int) -> str:
+    def _flight_summary(self, flight: Flight, index: int, direction: Direction) -> str:
         route = "маршрут не заполнен"
         if flight.loading_address and flight.unloading_address:
             route = f"{flight.loading_address} - {flight.unloading_address}"
@@ -172,10 +250,11 @@ class TelegramDialogSession:
 
         rate = ""
         if flight.rate_with_vat_rub:
-            if self._source_has_foreign_rate():
+            foreign_key = (direction, index - 1)
+            if foreign_key in self.foreign_rate_amounts:
                 rate = (
-                    f", ставка указана как {amount(flight.rate_with_vat_rub)} "
-                    f"{self._foreign_rate_currency()}, уточню курс для пересчета"
+                    f", ставка указана как {amount(self.foreign_rate_amounts[foreign_key])} "
+                    f"{self.foreign_rate_currencies.get(foreign_key, 'валюте')}, уточню курс для пересчета"
                 )
             else:
                 rate = f", ставка {money(flight.rate_with_vat_rub)} с НДС"
@@ -538,16 +617,13 @@ class TelegramDialogSession:
     def _foreign_rate_amount(self) -> float | None:
         if self._flight_key() in self.foreign_rate_amounts:
             return self.foreign_rate_amounts[self._flight_key()]
-        if not self._source_has_foreign_rate():
-            return None
-        current = self._current_flight().rate_with_vat_rub
-        return float(current) if current not in (None, "", 0, 0.0) else None
+        return None
 
     def _foreign_rate_currency(self) -> str:
         return self.foreign_rate_currencies.get(self._flight_key()) or detect_currency(self._all_text())
 
     def _rate_needs_currency_clarification(self, flight: Flight) -> bool:
-        return self._source_has_foreign_rate() and flight.rate_with_vat_rub not in (None, "", 0, 0.0)
+        return self._flight_key() in self.foreign_rate_amounts and flight.rate_with_vat_rub not in (None, "", 0, 0.0)
 
     def _all_text(self) -> str:
         return "\n".join([self.source_text, *self.dialog_history])
@@ -582,6 +658,7 @@ class TelegramDialogSession:
         source_text: str,
     ) -> bool:
         changed = False
+        rate_currency = _rate_currency_from_data(data)
         for field_name in (
             "client_short",
             "loading_address",
@@ -596,13 +673,16 @@ class TelegramDialogSession:
             "cargo_weight_kg",
             "loading_type",
         ):
-            if field_name not in data or data[field_name] in (None, ""):
+            raw_value = data.get(field_name)
+            if field_name == "rate_with_vat_rub" and rate_currency and rate_currency != "RUB":
+                raw_value = data.get("rate_original_amount") or raw_value
+            if raw_value in (None, ""):
                 continue
             if field_name == "cargo_weight_kg" and not _text_mentions_weight(source_text):
                 continue
             if field_name == "loading_type" and not _text_mentions_loading_type(source_text):
                 continue
-            value = self._coerce_field_value(field_name, data[field_name])
+            value = self._coerce_field_value(field_name, raw_value)
             if value in (None, ""):
                 continue
             current = getattr(target, field_name)
@@ -614,10 +694,10 @@ class TelegramDialogSession:
                 may_update = current_key == self._field_key(field_name)
             if may_update and current != value:
                 setattr(target, field_name, value)
-                if field_name == "rate_with_vat_rub" and contains_foreign_currency(source_text):
+                if field_name == "rate_with_vat_rub" and rate_currency and rate_currency != "RUB":
                     key = (direction, index)
                     self.foreign_rate_amounts[key] = float(value)
-                    self.foreign_rate_currencies[key] = detect_currency(source_text)
+                    self.foreign_rate_currencies[key] = rate_currency
                 changed = True
         return changed
 
@@ -684,8 +764,38 @@ def _text_mentions_loading_type(value: str) -> bool:
     return any(token in normalized for token in ("сзади", "зад", "сверху", "сбоку", "верх", "бок"))
 
 
+def _copy_ai_data(data: dict[str, Any]) -> dict[str, Any]:
+    copied = dict(data)
+    for key in ("forward_flights", "backhaul_flights"):
+        value = copied.get(key)
+        if isinstance(value, list):
+            copied[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+    return copied
+
+
+def _optional_rate_amount(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        try:
+            return parse_non_negative_float(str(value))
+        except ValueError:
+            return None
+
+
 def contains_foreign_currency(value: str) -> bool:
     return bool(FOREIGN_CURRENCY_RE.search(value))
+
+
+def _rate_currency_from_data(data: dict[str, Any]) -> str | None:
+    raw = str(data.get("rate_currency") or "").strip().upper()
+    if raw in {"RUB", "RUR", "RUBLES", "РУБ", "РУБЛИ", "РУБЛЕЙ"}:
+        return "RUB"
+    if raw in {"USD", "EUR", "CNY"}:
+        return raw
+    return None
 
 
 def detect_currency(value: str) -> str:

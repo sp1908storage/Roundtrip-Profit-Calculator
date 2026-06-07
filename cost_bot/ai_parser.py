@@ -41,6 +41,8 @@ flight:
   "distance_to_loading_km": number|null,
   "unloading_address": string|null,
   "rate_with_vat_rub": number|null,
+  "rate_original_amount": number|null,
+  "rate_currency": "RUB"|"USD"|"EUR"|"CNY"|null,
   "status": "{RU_DOMESTIC}"|"{RU_INTERNATIONAL}"|null,
   "country": "{RU_RUSSIA}"|"{RU_BELARUS}"|"{RU_CHINA}"|"{RU_MONGOLIA}"|null,
   "vat_percent": 22|0|null,
@@ -55,6 +57,9 @@ Rules:
 - The input may contain a running dialog with bot questions and user answers.
   Use bot question labels to understand which field a short user answer belongs to.
 - If Belarus, China, or Mongolia is mentioned, set that country and status "{RU_INTERNATIONAL}".
+- If the rate is given in RUB/rubles, set rate_with_vat_rub and rate_currency "RUB".
+- If the rate is given in USD/EUR/CNY or another foreign currency, set rate_original_amount and rate_currency, and leave rate_with_vat_rub null unless a ruble conversion is explicitly provided.
+- If the user corrects a previously extracted rate, update the matching flight rate instead of treating the correction as a client name or address.
 - VAT can only be 22 or 0.
 - "20 tons" or "20 \u0442\u043e\u043d\u043d" means 20000 kg.
 - Do not invent mileage, rate, VAT, or weight.
@@ -312,9 +317,13 @@ def _clean_country(value: Any, status: Any) -> str | None:
     if isinstance(value, str):
         normalized = COUNTRY_ALIASES.get(value.strip().lower())
         if normalized:
+            if status == RU_INTERNATIONAL and normalized == RU_RUSSIA:
+                return None
             return normalized
     if status == RU_DOMESTIC:
         return RU_RUSSIA
+    if status == RU_INTERNATIONAL and value == RU_RUSSIA:
+        return None
     return value if value in {RU_RUSSIA, RU_BELARUS, RU_CHINA, RU_MONGOLIA} else None
 
 

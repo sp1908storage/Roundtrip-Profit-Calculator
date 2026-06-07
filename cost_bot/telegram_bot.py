@@ -202,10 +202,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def _continue_session(update: Update, session: TelegramDialogSession, text: str) -> None:
     session.remember_user_answer(text)
+    if session.should_handle_current_answer_directly(text):
+        messages = session.handle_answer(text, remember=False)
+        await _send_messages(update, messages)
+        if not session.is_ready:
+            await _safe_write_request_log(update, session, "диалог идет", "")
+        await _finish_if_ready(update, session)
+        return
+
     ai_updated = False
     if session.stage not in {"another_forward", "has_backhaul", "another_backhaul"}:
         ai_updated = _try_update_session_from_ai(session)
-    if ai_updated and session.current_prompt_is_satisfied():
+    if ai_updated and (session.current_prompt_is_satisfied() or _looks_like_rate_correction(text)):
         messages = session.continue_after_ai_update()
     else:
         messages = session.handle_answer(text, remember=False)
@@ -339,6 +347,11 @@ def _looks_like_result_followup(text: str) -> bool:
             "прибыль",
         )
     )
+
+
+def _looks_like_rate_correction(text: str) -> bool:
+    normalized = _normalize_text(text)
+    return "ставк" in normalized and bool(re.search(r"\d", normalized))
 
 
 def _answer_result_followup(text: str, last_result: tuple[TelegramDialogSession, object]) -> str:
