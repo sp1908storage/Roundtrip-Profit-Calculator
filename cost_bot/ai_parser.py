@@ -16,6 +16,31 @@ RU_INTERNATIONAL = "\u041c\u0435\u0436\u0434\u0443\u043d\u0430\u0440\u043e\u0434
 RU_REAR = "\u0441\u0437\u0430\u0434\u0438"
 RU_TOP_SIDE = "\u0441\u0432\u0435\u0440\u0445\u0443/\u0441\u0431\u043e\u043a\u0443"
 
+FOREIGN_CITY_COUNTRIES = {
+    "\u044d\u0440\u043b\u044f\u043d\u044c": RU_CHINA,
+    "\u044d\u0440\u043b\u044f\u043d": RU_CHINA,
+    "erlian": RU_CHINA,
+    "erenhot": RU_CHINA,
+    "\u043c\u0430\u043d\u044c\u0447\u0436\u0443\u0440\u0438\u044f": RU_CHINA,
+    "\u043c\u0430\u043d\u0447\u0436\u0443\u0440\u0438\u044f": RU_CHINA,
+    "\u043c\u0430\u043d\u0436\u0443\u0440\u0438\u044f": RU_CHINA,
+    "\u043c\u0438\u043d\u0441\u043a": RU_BELARUS,
+    "\u0431\u0440\u0435\u0441\u0442": RU_BELARUS,
+    "\u0433\u043e\u043c\u0435\u043b\u044c": RU_BELARUS,
+    "\u0432\u0438\u0442\u0435\u0431\u0441\u043a": RU_BELARUS,
+    "\u043c\u043e\u0433\u0438\u043b\u0435\u0432": RU_BELARUS,
+    "\u0433\u0440\u043e\u0434\u043d\u043e": RU_BELARUS,
+    "\u0443\u043b\u0430\u043d-\u0431\u0430\u0442\u043e\u0440": RU_MONGOLIA,
+    "\u0443\u043b\u0430\u043d \u0431\u0430\u0442\u043e\u0440": RU_MONGOLIA,
+    "ulaanbaatar": RU_MONGOLIA,
+}
+
+RUB_PATTERN = r"руб\.?|рубл(?:ь|я|ей|ях)?|₽|rub|rur"
+USD_PATTERN = r"usd|\$|долл(?:ар(?:ов|а|ах)?)?|бакс(?:ов|а|ах)?|сша|у\.?\s*е\.?"
+EUR_PATTERN = r"eur|€|евро"
+CNY_PATTERN = r"cny|rmb|¥|юан(?:ь|я|ей|и|ях|ями)?|юан[еи]|китайск(?:их|ие|ими)?\s+юан(?:ей|и|ях|ями)?|yuan"
+CURRENCY_PATTERN = rf"{RUB_PATTERN}|{USD_PATTERN}|{EUR_PATTERN}|{CNY_PATTERN}"
+
 
 SYSTEM_INSTRUCTION = f"""
 You are an assistant for calculating freight round-trip cost, profitability, and related route economics.
@@ -232,29 +257,107 @@ def _postprocess_data(data: dict[str, Any], source_text: str) -> dict[str, Any]:
     if not data["forward_flights"]:
         data["forward_flights"] = [{}]
 
-    route = _extract_route(source_text)
-    country_from_text = _extract_country(source_text)
-    forced_status = RU_INTERNATIONAL if country_from_text and country_from_text != RU_RUSSIA else None
-    vat_from_text = _extract_vat(source_text)
+    segments = _extract_directional_segments(source_text)
+    if segments.get("forward"):
+        _apply_segment_facts(data["forward_flights"][0], segments["forward"])
+    if segments.get("backhaul"):
+        if not data["backhaul_flights"]:
+            data["backhaul_flights"] = [{}]
+        _apply_segment_facts(data["backhaul_flights"][0], segments["backhaul"])
+    if not segments and source_text:
+        _apply_segment_facts(data["forward_flights"][0], source_text)
 
-    for flight in [*data["forward_flights"], *data["backhaul_flights"]]:
-        if route:
-            flight["loading_address"] = route[0]
-            flight["unloading_address"] = route[1]
-        if country_from_text:
-            flight["country"] = country_from_text
+    global_route = None if segments else _extract_route(source_text)
+    global_country = None if segments else _extract_country(source_text)
+    if global_route and not global_country:
+        global_country = _extract_route_country(global_route)
+    global_vat = _extract_vat(source_text)
 
-        flight["vat_percent"] = _clean_vat(flight.get("vat_percent"), vat_from_text)
+    flight_sources: list[tuple[dict[str, Any], str]] = []
+    for index, flight in enumerate(data["forward_flights"]):
+        segment_text = segments.get("forward", source_text) if index == 0 else source_text
+        flight_sources.append((flight, segment_text))
+    for index, flight in enumerate(data["backhaul_flights"]):
+        segment_text = segments.get("backhaul", source_text) if index == 0 else source_text
+        flight_sources.append((flight, segment_text))
+
+    for flight, flight_text in flight_sources:
+        if global_route:
+            flight["loading_address"] = global_route[0]
+            flight["unloading_address"] = global_route[1]
+        if global_country:
+            flight["country"] = global_country
+
+        country = flight.get("country")
+        forced_status = None
+        if country == RU_RUSSIA:
+            forced_status = RU_DOMESTIC
+        elif country:
+            forced_status = RU_INTERNATIONAL
+        vat_fallback = _extract_vat(flight_text) if segments else global_vat
+        flight["vat_percent"] = _clean_vat(flight.get("vat_percent"), vat_fallback)
         flight["status"] = forced_status or _clean_status(
             flight.get("status"),
-            flight.get("country"),
-            source_text,
+            country,
+            flight_text,
         )
         flight["country"] = _clean_country(flight.get("country"), flight.get("status"))
-        flight["loading_type"] = _clean_loading_type(flight.get("loading_type"), source_text)
-        flight["cargo_weight_kg"] = _clean_weight(flight.get("cargo_weight_kg"), source_text)
+        flight["loading_type"] = _clean_loading_type(flight.get("loading_type"), flight_text)
+        flight["cargo_weight_kg"] = _clean_weight(flight.get("cargo_weight_kg"), flight_text)
 
     return data
+
+
+def _extract_directional_segments(text: str) -> dict[str, str]:
+    match = re.search(r"\b(?:обратка|обратный\s+рейс|обратное\s+направление)\b\s*(?:=|:|-)?", text, flags=re.IGNORECASE)
+    if not match:
+        return {}
+    return {
+        "forward": text[: match.start()].strip(" ,;\n"),
+        "backhaul": text[match.end() :].strip(" ,;\n"),
+    }
+
+
+def _apply_segment_facts(flight: dict[str, Any], segment: str) -> None:
+    route = _extract_route(segment)
+    if route:
+        flight["loading_address"] = route[0]
+        flight["unloading_address"] = route[1]
+
+    country = _extract_country(segment)
+    route_country = _extract_route_country(route) if route else None
+    country = country or route_country
+    if country:
+        flight["country"] = country
+        if country != RU_RUSSIA:
+            flight["status"] = RU_INTERNATIONAL
+        else:
+            flight["status"] = RU_DOMESTIC
+    elif route:
+        flight["country"] = RU_RUSSIA
+        flight["status"] = RU_DOMESTIC
+
+    vat = _extract_vat(segment)
+    if vat is not None:
+        flight["vat_percent"] = vat
+
+    rate = _extract_rate(segment)
+    if rate:
+        amount_value, currency = rate
+        flight["rate_currency"] = currency
+        if currency == "RUB":
+            flight["rate_with_vat_rub"] = amount_value
+        else:
+            flight["rate_original_amount"] = amount_value
+            flight["rate_with_vat_rub"] = amount_value
+
+    weight = _extract_weight(segment)
+    if weight is not None:
+        flight["cargo_weight_kg"] = weight
+
+    loading_type = _extract_loading_type(segment)
+    if loading_type is not None:
+        flight["loading_type"] = loading_type
 
 
 def _extract_route(text: str) -> tuple[str, str] | None:
@@ -265,14 +368,122 @@ def _extract_route(text: str) -> tuple[str, str] | None:
     )
     if not match:
         return None
-    loading = re.sub(
-        r"^(\u0440\u0435\u0439\u0441|\u043c\u0430\u0440\u0448\u0440\u0443\u0442)\s+",
+    loading = _clean_route_endpoint(match.group(1))
+    unloading = _clean_route_endpoint(match.group(2))
+    unloading_extra = _extract_unloading_address_extra(text, match.end())
+    if unloading_extra:
+        unloading = f"{unloading}, {unloading_extra}"
+    return loading, unloading
+
+
+def _extract_unloading_address_extra(text: str, route_end: int) -> str | None:
+    tail = text[route_end:]
+    if not tail.startswith(","):
+        return None
+    extras: list[str] = []
+    for part in tail[1:].split(","):
+        cleaned = part.strip(" =:;.")
+        if not cleaned:
+            continue
+        if _looks_like_route_field(cleaned):
+            break
+        extras.append(_clean_route_endpoint(cleaned))
+    return ", ".join(item for item in extras if item) or None
+
+
+def _looks_like_route_field(value: str) -> bool:
+    lowered = value.lower()
+    if re.match(r"\d", lowered):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:ставк\w*|фрахт\w*|вес\w*|груз\w*|загруз\w*|ндс|vat|пробег\w*|км|клиент\w*|логист\w*|международ\w*|внутр\w*|страна)\b",
+            lowered,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _clean_route_endpoint(value: str) -> str:
+    value = value.strip(" =:;,.")
+    value = re.sub(
+        r"^.*\b(?:прямое\s+направление|прямой\s+рейс|прямой\s+маршрут)\b\s*(?:=|:|-)?\s*",
         "",
-        match.group(1).strip(),
+        value,
         flags=re.IGNORECASE,
     )
-    unloading = match.group(2).strip()
-    return loading, unloading
+    value = re.sub(
+        r"^.*\b(?:кругорейсу|круго-рейсу|рейсу|маршруту|маршрут)\s+",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"^\b(?:рейс|маршрут|обратка)\b\s*(?:=|:|-)?\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*\((?:Россия|Беларусь|Белоруссия|Китай|КНР|Монголия|Russia|Belarus|China|Mongolia)\)\s*", " ", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"\s+(?:ставк\w*|фрахт\w*|вес\w*|загруз\w*|ндс|vat|\d[\d\s.,]*(?:руб\.?|rub|usd|eur|cny|кг|kg|т|тонн)).*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return value.strip(" =:;,.")
+
+
+def _extract_route_country(route: tuple[str, str]) -> str | None:
+    for endpoint in route:
+        normalized = endpoint.strip().lower().replace("\u0451", "\u0435")
+        for city, country in FOREIGN_CITY_COUNTRIES.items():
+            if re.search(rf"\b{re.escape(city)}\b", normalized):
+                return country
+    return RU_RUSSIA
+
+
+def _extract_rate(text: str) -> tuple[float, str] | None:
+    match = re.search(
+        rf"(?:ставк[а-я]*|фрахт)\D{{0,20}}(\d[\d\s.,]*)\s*({CURRENCY_PATTERN})?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    amount = _parse_human_amount(match.group(1))
+    currency_text = (match.group(2) or "руб").lower()
+    currency = "RUB"
+    if re.search(USD_PATTERN, currency_text):
+        currency = "USD"
+    elif re.search(EUR_PATTERN, currency_text):
+        currency = "EUR"
+    elif re.search(CNY_PATTERN, currency_text):
+        currency = "CNY"
+    return amount, currency
+
+
+def _parse_human_amount(value: str) -> float:
+    raw = value.replace("\u00a0", " ").replace(" ", "")
+    separator_match = re.match(r"^(\d{1,3})([,.])(\d{3})$", raw)
+    if separator_match:
+        return float(separator_match.group(1) + separator_match.group(3))
+    return float(raw.replace(",", "."))
+
+
+def _extract_weight(text: str) -> float | None:
+    ton_match = re.search(r"(\d+(?:[,.]\d+)?)\s*(?:т|тонн)", text, flags=re.IGNORECASE)
+    if ton_match:
+        return float(ton_match.group(1).replace(",", ".")) * 1000
+
+    kg_match = re.search(r"(\d[\d\s.,]*)\s*(?:кг|kg)", text, flags=re.IGNORECASE)
+    if not kg_match:
+        return None
+    return _parse_human_amount(kg_match.group(1))
+
+
+def _extract_loading_type(text: str) -> str | None:
+    lowered = text.lower()
+    if "сверху" in lowered or "сбоку" in lowered or "бок" in lowered:
+        return RU_TOP_SIDE
+    if "сзади" in lowered or "зад" in lowered:
+        return RU_REAR
+    return None
 
 
 def _extract_country(text: str) -> str | None:
@@ -287,6 +498,11 @@ def _extract_vat(text: str) -> int | None:
     match = re.search(r"(?:\u043d\u0434\u0441|vat)\s*(22|0)\s*%?", text, flags=re.IGNORECASE)
     if match:
         return int(match.group(1))
+    lowered = text.lower()
+    if re.search(r"\b(?:без|0)\s+ндс\b", lowered):
+        return 0
+    if re.search(r"\bс\s+ндс\b", lowered):
+        return 22
     return None
 
 
@@ -337,9 +553,9 @@ def _clean_loading_type(value: Any, source_text: str) -> str | None:
 
 
 def _clean_weight(value: Any, source_text: str) -> float | None:
-    ton_match = re.search(r"(\d+(?:[,.]\d+)?)\s*(?:\u0442|\u0442\u043e\u043d\u043d)", source_text, flags=re.IGNORECASE)
-    if ton_match:
-        return float(ton_match.group(1).replace(",", ".")) * 1000
+    extracted = _extract_weight(source_text)
+    if extracted is not None:
+        return extracted
     return _optional_float(value)
 
 

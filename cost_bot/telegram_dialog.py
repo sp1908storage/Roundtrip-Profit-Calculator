@@ -29,10 +29,10 @@ DIRECT_PROMPT_FIELDS = {
     "cargo_weight_kg",
     "loading_type",
 }
-FOREIGN_CURRENCY_RE = re.compile(
-    r"(\busd\b|\$|долл?|доллар|у\.?\s*е\.?|\beur\b|€|евро|\bcny\b|\brmb\b|¥|юан|юань|юаней|yuan)",
-    re.IGNORECASE,
-)
+USD_PATTERN = r"\busd\b|\$|долл(?:ар(?:ов|а|ах)?)?|бакс(?:ов|а|ах)?|сша|у\.?\s*е\.?"
+EUR_PATTERN = r"\beur\b|€|евро"
+CNY_PATTERN = r"\bcny\b|\brmb\b|¥|юан(?:ь|я|ей|и|ях|ями)?|юан[еи]|китайск(?:их|ие|ими)?\s+юан(?:ей|и|ях|ями)?|yuan"
+FOREIGN_CURRENCY_RE = re.compile(rf"({USD_PATTERN}|{EUR_PATTERN}|{CNY_PATTERN})", re.IGNORECASE)
 
 
 class ClarificationNeeded(ValueError):
@@ -78,6 +78,7 @@ class TelegramDialogSession:
             flight.direction = Direction.FORWARD
         for flight in self.round_trip.backhaul_flights:
             flight.direction = Direction.BACKHAUL
+        self._mark_foreign_rates_from_source()
 
     def start(self) -> list[str]:
         messages = [self.initial_summary()]
@@ -195,6 +196,16 @@ class TelegramDialogSession:
                 if current not in (None, "") and abs(float(current) - rate_amount) < 0.01:
                     matches.append((direction, index, flight))
         return matches[0] if len(matches) == 1 else None
+
+    def _mark_foreign_rates_from_source(self) -> None:
+        for rate_amount, currency in _foreign_rate_mentions(self.source_text):
+            match = self._find_unique_flight_by_rate(rate_amount)
+            if match is None:
+                continue
+            direction, index, _flight = match
+            key = (direction, index)
+            self.foreign_rate_amounts[key] = rate_amount
+            self.foreign_rate_currencies[key] = currency
 
     def continue_after_ai_update(self) -> list[str]:
         if self.current_prompt and self._field_has_value(self.current_prompt.field):
@@ -603,6 +614,9 @@ class TelegramDialogSession:
 
     def _current_flight_label(self) -> str:
         direction = "прямой" if self.current_direction == Direction.FORWARD else "обратный"
+        flight = self._current_flight()
+        if flight.loading_address and flight.unloading_address:
+            return f"{direction.capitalize()} рейс {flight.loading_address} - {flight.unloading_address}"
         return f"{direction.capitalize()} рейс {self.current_index + 1}"
 
     def _field_key(self, field: str) -> tuple[Direction, int, str]:
@@ -745,11 +759,10 @@ def parse_required_text(value: str) -> str:
 
 
 def parse_non_negative_float(value: str) -> float:
-    cleaned = value.replace("\u00a0", " ").replace(",", ".")
-    match = re.search(r"\d+(?:\.\d+)?", cleaned.replace(" ", ""))
+    match = re.search(r"\d[\d\s.,]*", value)
     if not match:
         raise ValueError("Введите число.")
-    parsed = float(match.group(0))
+    parsed = _parse_human_amount(match.group(0))
     if parsed < 0:
         raise ValueError("Число не может быть отрицательным.")
     return parsed
@@ -776,6 +789,11 @@ def _copy_ai_data(data: dict[str, Any]) -> dict[str, Any]:
 def _optional_rate_amount(value: Any) -> float | None:
     if value in (None, ""):
         return None
+    if isinstance(value, str):
+        try:
+            return _parse_human_amount(value)
+        except ValueError:
+            pass
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -783,6 +801,28 @@ def _optional_rate_amount(value: Any) -> float | None:
             return parse_non_negative_float(str(value))
         except ValueError:
             return None
+
+
+def _foreign_rate_mentions(value: str) -> list[tuple[float, str]]:
+    mentions: list[tuple[float, str]] = []
+    pattern = re.compile(
+        rf"(?:ставк[а-я]*|фрахт)\D{{0,20}}(\d[\d\s.,]*)\s*({USD_PATTERN}|{EUR_PATTERN}|{CNY_PATTERN})",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(value):
+        amount = _optional_rate_amount(match.group(1))
+        if amount is None:
+            continue
+        mentions.append((amount, detect_currency(match.group(2))))
+    return mentions
+
+
+def _parse_human_amount(value: str) -> float:
+    raw = value.replace("\u00a0", " ").replace(" ", "")
+    separator_match = re.match(r"^(\d{1,3})([,.])(\d{3})$", raw)
+    if separator_match:
+        return float(separator_match.group(1) + separator_match.group(3))
+    return float(raw.replace(",", "."))
 
 
 def contains_foreign_currency(value: str) -> bool:
@@ -800,11 +840,11 @@ def _rate_currency_from_data(data: dict[str, Any]) -> str | None:
 
 def detect_currency(value: str) -> str:
     normalized = normalize_answer(value)
-    if re.search(r"(\beur\b|€|евро)", normalized):
+    if re.search(EUR_PATTERN, normalized, flags=re.IGNORECASE):
         return "EUR"
-    if re.search(r"(\bcny\b|\brmb\b|¥|юан|юань|юаней|yuan)", normalized):
+    if re.search(CNY_PATTERN, normalized, flags=re.IGNORECASE):
         return "CNY"
-    if re.search(r"(\busd\b|\$|долл?|доллар|у\.?\s*е\.?)", normalized):
+    if re.search(USD_PATTERN, normalized, flags=re.IGNORECASE):
         return "USD"
     return "валюте"
 

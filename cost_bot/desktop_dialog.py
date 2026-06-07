@@ -1,5 +1,7 @@
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Thread
 from typing import Callable
 from uuid import uuid4
 
@@ -32,6 +34,7 @@ class DesktopDialogSession:
         self.stage = "collect"
         self.result: RoundTripCost | None = None
         self.answered_fields: set[tuple[Direction, int, str]] = set()
+        self._log_thread: Thread | None = None
 
     def start(self) -> str:
         self.current_prompt = self._next_field_prompt()
@@ -320,22 +323,32 @@ class DesktopDialogSession:
     def _safe_log_request(self, calculation_status: str, error_comment: str = "") -> None:
         if not sheets_is_configured():
             return
-        try:
-            append_request_log(
-                request_id=self.request_id,
-                source="Desktop",
-                user="Desktop",
-                message_type="desktop",
-                raw_text="\n".join(self.raw_entries) or "Desktop dialog started",
-                image_file_id=None,
-                ai_model="",
-                ai_status="без AI",
-                calculation_status=calculation_status,
-                error_comment=error_comment,
-                round_trip=self.round_trip,
-            )
-        except Exception:
+        if self._log_thread and self._log_thread.is_alive():
             return
+
+        raw_text = "\n".join(self.raw_entries) or "Desktop dialog started"
+        round_trip = deepcopy(self.round_trip)
+
+        def log_request() -> None:
+            try:
+                append_request_log(
+                    request_id=self.request_id,
+                    source="Desktop",
+                    user="Desktop",
+                    message_type="desktop",
+                    raw_text=raw_text,
+                    image_file_id=None,
+                    ai_model="",
+                    ai_status="без AI",
+                    calculation_status=calculation_status,
+                    error_comment=error_comment,
+                    round_trip=round_trip,
+                )
+            except Exception:
+                return
+
+        self._log_thread = Thread(target=log_request, daemon=True)
+        self._log_thread.start()
 
 
 def parse_optional_text(value: str) -> str | None:
