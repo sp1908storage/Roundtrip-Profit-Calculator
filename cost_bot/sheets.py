@@ -18,8 +18,10 @@ HEADERS = [
     "direction",
     "client_short",
     "loading_address",
+    "loading_date",
     "distance_to_loading_km",
     "unloading_address",
+    "unloading_date",
     "rate_with_vat_rub",
     "status",
     "country",
@@ -434,8 +436,10 @@ def _row_value_by_header(
 def _fill_request_flight(headers: list[str], row: list, prefix: str, flight: Flight) -> None:
     _set_by_tokens(headers, row, prefix, ["клиент"], flight.client_short or "")
     _set_by_tokens(headers, row, prefix, ["адрес", "загруз"], flight.loading_address or "")
+    _set_by_tokens(headers, row, prefix, ["дата", "загруз"], flight.loading_date or "")
     _set_by_tokens(headers, row, prefix, ["пробег", "загруз"], flight.distance_to_loading_km)
     _set_by_tokens(headers, row, prefix, ["адрес", "выгруз"], flight.unloading_address or "")
+    _set_by_tokens(headers, row, prefix, ["дата", "выгруз"], flight.unloading_date or "")
     _set_by_tokens(headers, row, prefix, ["ставка", "руб"], flight.rate_with_vat_rub)
     _set_by_tokens(
         headers,
@@ -499,7 +503,7 @@ def _set_loading_type(headers: list[str], row: list, prefix: str, value) -> None
             continue
         if "loading_type" in normalized or (
             "загруз" in normalized
-            and not any(blocked in normalized for blocked in ("адрес", "пробег", "мест"))
+            and not any(blocked in normalized for blocked in ("адрес", "дата", "пробег", "мест"))
         ):
             row[index] = _cell_value(value)
             return
@@ -881,8 +885,10 @@ def _flight_cost_row(
         flight.direction.value,
         flight.client_short or "",
         flight.loading_address or "",
+        flight.loading_date or "",
         flight.distance_to_loading_km or 0,
         flight.unloading_address or "",
+        flight.unloading_date or "",
         flight.rate_with_vat_rub or 0,
         flight.status.value if flight.status else "",
         flight.country or "",
@@ -921,8 +927,10 @@ def _flight_cost_row(
     _set_generic_by_tokens(headers, row, ["направ"], flight.direction.value)
     _set_generic_by_tokens(headers, row, ["клиент"], flight.client_short or "")
     _set_generic_by_tokens(headers, row, ["адрес", "загруз"], flight.loading_address or "")
+    _set_generic_by_tokens(headers, row, ["дата", "загруз"], flight.loading_date or "")
     _set_generic_by_tokens(headers, row, ["пробег", "загруз"], flight.distance_to_loading_km or 0)
     _set_generic_by_tokens(headers, row, ["адрес", "выгруз"], flight.unloading_address or "")
+    _set_generic_by_tokens(headers, row, ["дата", "выгруз"], flight.unloading_date or "")
     _set_generic_by_tokens(headers, row, ["ставк"], flight.rate_with_vat_rub or 0)
     _set_generic_by_tokens(headers, row, ["статус"], flight.status.value if flight.status else "")
     _set_generic_by_tokens(headers, row, ["стран"], flight.country or "")

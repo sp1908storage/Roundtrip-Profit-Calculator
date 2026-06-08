@@ -109,8 +109,10 @@ class DesktopDialogSession:
         prompts = [
             Prompt("client_short", "Клиент кратко", parse_optional_text, optional=True),
             Prompt("loading_address", "Адрес загрузки", parse_required_text),
+            Prompt("loading_date", "Дата загрузки", parse_optional_text, optional=True),
             Prompt("distance_to_loading_km", "Пробег до места загрузки, км", parse_non_negative_float),
             Prompt("unloading_address", "Адрес выгрузки", parse_required_text),
+            Prompt("unloading_date", "Дата выгрузки", parse_optional_text, optional=True),
             Prompt("rate_with_vat_rub", "Ставка в рублях с НДС", parse_non_negative_float),
             Prompt(
                 "status",

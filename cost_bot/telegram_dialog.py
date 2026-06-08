@@ -449,6 +449,12 @@ class TelegramDialogSession:
                 parse_required_text,
             ),
             Prompt(
+                "loading_date",
+                "Дата загрузки",
+                parse_optional_text,
+                optional=True,
+            ),
+            Prompt(
                 "distance_to_loading_km",
                 "Пробег до места загрузки, км. Если машина уже на месте, можно ответить 'пропустить'",
                 parse_non_negative_float,
@@ -458,6 +464,12 @@ class TelegramDialogSession:
                 "unloading_address",
                 "Адрес выгрузки. Лучше указать город, улицу, дом и строение, если известно",
                 parse_required_text,
+            ),
+            Prompt(
+                "unloading_date",
+                "Дата выгрузки",
+                parse_optional_text,
+                optional=True,
             ),
             Prompt(
                 "rate_with_vat_rub",
@@ -676,8 +688,10 @@ class TelegramDialogSession:
         for field_name in (
             "client_short",
             "loading_address",
+            "loading_date",
             "distance_to_loading_km",
             "unloading_address",
+            "unloading_date",
             "rate_with_vat_rub",
             "status",
             "country",

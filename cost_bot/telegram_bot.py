@@ -17,7 +17,7 @@ from .ai_parser import (
 )
 from .calculator import calculate_round_trip
 from .config import DEFAULT_COST_CONFIG
-from .dialogue import format_result, money
+from .dialogue import format_flight_route, format_result, money
 from .models import RoundTrip, TransportStatus
 from .settings import get_settings
 from .sheets import (
@@ -369,7 +369,7 @@ def _answer_result_followup(text: str, last_result: tuple[TelegramDialogSession,
         "",
     ]
     total_tolls = 0.0
-    for index, item in enumerate(result.flights, 1):
+    for item in result.flights:
         flight = item.flight
         distance_to_loading = flight.distance_to_loading_km or 0
         distance_to_unloading = flight.distance_to_unloading_km or 0
@@ -381,7 +381,7 @@ def _answer_result_followup(text: str, last_result: tuple[TelegramDialogSession,
         domestic_km = total_km - foreign_km
         total_tolls += item.tolls_rub
         lines.append(
-            f"Рейс {index}: {domestic_km:g} км по РФ x {config.tolls_rub_per_km:g} = {money(item.tolls_rub)}"
+            f"{format_flight_route(flight)}: {domestic_km:g} км по РФ x {config.tolls_rub_per_km:g} = {money(item.tolls_rub)}"
         )
     lines.extend(
         [

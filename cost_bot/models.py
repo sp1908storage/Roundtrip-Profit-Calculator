@@ -25,8 +25,10 @@ class Flight:
     direction: Direction
     client_short: str | None = None
     loading_address: str | None = None
+    loading_date: str | None = None
     distance_to_loading_km: float | None = None
     unloading_address: str | None = None
+    unloading_date: str | None = None
     rate_with_vat_rub: float | None = None
     status: TransportStatus | None = None
     country: str | None = None
@@ -41,8 +43,10 @@ class Flight:
             "direction": self.direction.value,
             "client_short": self.client_short,
             "loading_address": self.loading_address,
+            "loading_date": self.loading_date,
             "distance_to_loading_km": self.distance_to_loading_km,
             "unloading_address": self.unloading_address,
+            "unloading_date": self.unloading_date,
             "rate_with_vat_rub": self.rate_with_vat_rub,
             "status": self.status.value if self.status else None,
             "country": self.country,
@@ -62,4 +66,3 @@ class RoundTrip:
     @property
     def flights(self) -> list[Flight]:
         return [*self.forward_flights, *self.backhaul_flights]
-

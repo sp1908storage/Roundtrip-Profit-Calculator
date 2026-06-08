@@ -14,8 +14,10 @@ Prompt = Callable[[str], str]
 FIELD_LABELS = {
     "client_short": "Клиент кратко",
     "loading_address": "Адрес загрузки",
+    "loading_date": "Дата загрузки",
     "distance_to_loading_km": "Пробег до места загрузки, км",
     "unloading_address": "Адрес выгрузки",
+    "unloading_date": "Дата выгрузки",
     "rate_with_vat_rub": "Ставка в рублях с НДС",
     "status": "Статус перевозки",
     "country": "Страна",
@@ -83,8 +85,10 @@ def collect_flights(flights: list[Flight], direction: Direction, direction_label
 def collect_flight(flight: Flight) -> None:
     flight.client_short = ask_optional("Клиент кратко", flight.client_short)
     flight.loading_address = ask_text("Адрес загрузки", flight.loading_address)
+    flight.loading_date = ask_optional("Дата загрузки", flight.loading_date)
     flight.distance_to_loading_km = ask_float("Пробег до места загрузки, км", flight.distance_to_loading_km)
     flight.unloading_address = ask_text("Адрес выгрузки", flight.unloading_address)
+    flight.unloading_date = ask_optional("Дата выгрузки", flight.unloading_date)
     flight.rate_with_vat_rub = ask_float("Ставка в рублях с НДС", flight.rate_with_vat_rub)
     flight.status = ask_status(flight.status)
     if flight.status == TransportStatus.INTERNATIONAL:
@@ -213,8 +217,8 @@ def normalize_country(value: str) -> str | None:
 
 def format_result(result: RoundTripCost) -> str:
     lines = ["\nРасчет себестоимости"]
-    for idx, item in enumerate(result.flights, 1):
-        lines.extend(format_flight_cost(idx, item))
+    for item in result.flights:
+        lines.extend(format_flight_cost(item))
     lines.extend(
         [
             "",
@@ -229,10 +233,10 @@ def format_result(result: RoundTripCost) -> str:
     return "\n".join(lines)
 
 
-def format_flight_cost(index: int, item: FlightCost) -> list[str]:
+def format_flight_cost(item: FlightCost) -> list[str]:
     return [
         "",
-        f"Рейс {index}:",
+        f"{format_flight_route(item.flight)}:",
         f"- Выручка: {money(item.revenue_rub)}",
         f"- Топливо: {money(item.fuel_rub)}",
         f"- Обслуживание: {money(item.maintenance_rub)}",
@@ -243,6 +247,19 @@ def format_flight_cost(index: int, item: FlightCost) -> list[str]:
         f"- Себестоимость рейса: {money(item.total_cost_rub)}",
         f"- Прибыль рейса: {money(item.profit_rub)}",
     ]
+
+
+def format_flight_route(flight: Flight) -> str:
+    direction = "Прямой рейс" if flight.direction == Direction.FORWARD else "Обратный рейс"
+    loading = (flight.loading_address or "").strip()
+    unloading = (flight.unloading_address or "").strip()
+    if loading and unloading:
+        return f"{direction} {loading}-{unloading}"
+    if loading:
+        return f"{direction}, загрузка {loading}"
+    if unloading:
+        return f"{direction}, выгрузка {unloading}"
+    return f"{direction}, маршрут не указан"
 
 
 def manager_comment(result: RoundTripCost) -> str:

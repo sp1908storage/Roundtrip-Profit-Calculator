@@ -64,8 +64,10 @@ flight:
 {{
   "client_short": string|null,
   "loading_address": string|null,
+  "loading_date": string|null,
   "distance_to_loading_km": number|null,
   "unloading_address": string|null,
+  "unloading_date": string|null,
   "rate_with_vat_rub": number|null,
   "rate_original_amount": number|null,
   "rate_currency": "RUB"|"USD"|"EUR"|"CNY"|null,
@@ -87,6 +89,7 @@ Rules:
 - If the rate is given in USD/EUR/CNY or another foreign currency, set rate_original_amount and rate_currency, and leave rate_with_vat_rub null unless a ruble conversion is explicitly provided.
 - If the user corrects a previously extracted rate, update the matching flight rate instead of treating the correction as a client name or address.
 - VAT can only be 22 or 0.
+- If loading or unloading dates are mentioned, keep them as short strings in loading_date and unloading_date.
 - "20 tons" or "20 \u0442\u043e\u043d\u043d" means 20000 kg.
 - Do not invent mileage, rate, VAT, or weight.
 - If only one flight is mentioned, put it into forward_flights.
@@ -610,8 +613,10 @@ def flight_from_dict(direction: Direction, data: dict[str, Any]) -> Flight:
         direction=direction,
         client_short=data.get("client_short"),
         loading_address=data.get("loading_address"),
+        loading_date=_optional_text(data.get("loading_date")),
         distance_to_loading_km=_optional_float(data.get("distance_to_loading_km")),
         unloading_address=data.get("unloading_address"),
+        unloading_date=_optional_text(data.get("unloading_date")),
         rate_with_vat_rub=_optional_float(data.get("rate_with_vat_rub")),
         status=TransportStatus(status) if status else None,
         country=data.get("country"),
@@ -627,6 +632,12 @@ def _optional_float(value: Any) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _optional_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value).strip() or None
 
 
 def _optional_int(value: Any) -> int | None:
